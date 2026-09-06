@@ -381,7 +381,11 @@ ComfyUI 4 面 → Tripo `multiview-to-model`（`v3.1-20260211`, `texture_quality
 
 fal Multiple-Angles LoRA の `<sks> left side view` / `<sks> right side view` は **seed 次第で向きが反転**。同一プロンプトで両方とも同じ側面が出た実例あり → 向き指定に使えない。**片側だけ生成 → `sharp().flop()` で水平反転**して対を作るのが確実。装備の左右は反転するが、front/back が真値を持つので実害は小さい（`src/stages/views.ts` はこの方式）。
 
-### 9.2 二面顔（Janus problem）**[未解決]**
+### 9.2 二面顔（Janus problem）**[解決済み — 入力の出所が原因]**
+
+> **結論（2026-09-06）**: `image-to-multiview` が作った 4 面を `multiview-to-model` に渡すと **二面顔も back 無視も消える**。ComfyUI（Qwen-Image-Edit）で作った 4 面では、見た目がほぼ同一でも back が反映されない。**Tripo に渡す 4 面は Tripo 自身に作らせる。** 実測は §9.6。
+
+以下は原因を潰していった記録。
 
 症状: フード + フルフェイスガスマスクのキャラで **後頭部にも顔が生成**。フードを貫通。足首も捻れてブーツが変形。
 
@@ -441,3 +445,32 @@ bone_7 … bone_22（命名なしが 18 本）  ← 計 32 本
 - `quad: true` は **出力を FBX に強制**（quad は glTF に格納できない）
 - P1 は `quad` / `smart_low_poly` / `generate_parts` / `geometry_quality` 非対応、`face_limit` は 50-20000
 - rig のサーバ側デフォルトは v1.0（biped プリセットのみ）。v2.5 を使うなら明示指定が必要
+
+### 9.6 決定実験 — 4 面の出所だけを変える（2026-09-06）
+
+同じ `front.png` から出発し、side / back を **誰が作ったか**だけを変えて `multiview-to-model` を 2 回実行（両方 `--draft --seed 20260906`、各 20 credits）。
+
+| 4 面の出所 | back のX字ストラップ | 後頭部 |
+|---|---|---|
+| ComfyUI (Qwen-Image-Edit 2511 + Multiple-Angles LoRA) | **反映されない**（front の肩ストラップが背面に縦に伸びる） | **顔が生成される**（二面顔） |
+| Tripo `image-to-multiview`（10 credits） | **反映される** | フードの後頭部。**顔なし** |
+
+投入した 4 面は構図・向き・被写体スケールがほぼ同一（§9.2 の bbox 実測: 自前 ±7px / Tripo 製 ±25px で **自前の方が揃っている**）。それでも結果が割れる。**画像の「整い方」ではなく、生成元が Tripo 自身かどうかで決まる。**
+
+推測（未検証）: `image-to-multiview` の出力が `multiview-to-model` の学習分布そのものなので、外部生成の 4 面は分布外として back の重みが落ちる。
+
+**運用方針**: Tripo に渡す 4 面は `image-to-multiview` に作らせる。front だけ ComfyUI で作り込む。追加コストは 10 credits、代わりに `c3d views` の ComfyUI 実行（数分）が不要になる。デザインの細部が Tripo の解釈に委ねられるのが代償。
+
+### 9.7 SDK の型を信じると外す点 **[確定]**
+
+`@vastai/tripo-sdk` の型定義にあるが v3 の実際の API と食い違うもの:
+
+- **`MultiviewToModelParams.original_task_id`** — サーバは 400 `code=1004 files or inputs are required for multiview_to_model` で拒否。ドキュメントの「`files` と排他」という記述も現行 API では機能していない。`image-to-multiview` の結果を使うなら **出力 URL を `files` に渡す**
+- **`generate_multiview_image` の出力 URL のネスト** — `output.front_view_url` ではなく `output.generate_multiview_image.front_view_url`。`left` / `back` / `right` も同様
+- `toFileDescriptor` は `http(s)://` で始まる文字列を `{url}`、それ以外を `{file_token}` として送る（`src/utils.js:33`）。URL をそのまま `files` に入れてよい
+
+### 9.8 Bun の落とし穴 **[確定]**
+
+`Bun.write(path, Response)` は 42MB の GLB で **CPU 1 コアを 100% 占有したまま無限に回る**（bun 1.3.14 / Windows）。curl は同じ URL を数秒で取得。**タスクはサーバ側で成功しクレジットも消費済み**なので、ハングに見えて金だけ払う経路になる。`await res.arrayBuffer()` を挟んで回避（`src/lib/tripo.ts`）。
+
+kill しても bun の子プロセスが残り、出力ディレクトリを掴んで `mv` が `Device or resource busy` で失敗する。プロセスを明示的に落とすこと。

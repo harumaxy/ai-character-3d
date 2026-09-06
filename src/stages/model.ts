@@ -1,6 +1,6 @@
 /**
  * `c3d model <char> [--single] [--version v3.1-20260211] [--faces 20000] [--quad]
- *                   [--low-poly] [--draft] [--autofix]
+ *                   [--low-poly] [--draft] [--autofix] [--from-multiview task_id]
  *                   [--rig] [--animate] [--only walk,run] [--fbx] [--task id] [--balance]`
  *
  * Tripo API v3: views -> 3D model (+ rig, + preset animations, + FBX for Blender).
@@ -15,6 +15,8 @@
  * `--draft` skips texture (20 credits instead of 40) to check geometry first.
  * `--faces n` costs nothing; `--low-poly` (+10) buys game-ready edge flow.
  * `--single` uses image-to-model on views/front.png only (cheaper, less faithful).
+ * `--from-multiview <task_id>` uses a Tripo image-to-multiview sheet instead of
+ * views/, to test how much of a supplied back view the reconstruction honours.
  * `--task <task_id>` adopts an existing model task (rig / animate / fbx only).
  * Do mesh edits (decimate / segment) BEFORE rigging: they discard the rig.
  * Credit costs: docs/research/tripo-ai.md §2.
@@ -27,7 +29,14 @@ import { modelDir, viewsDir } from "../lib/paths";
 import { download, modelUrl, runTask, tripoClient, uploadFile } from "../lib/tripo";
 import { MOTIONS } from "../motions";
 
-const VALUE_FLAGS = new Set(["--version", "--faces", "--only", "--task", "--seed"]);
+const VALUE_FLAGS = new Set([
+  "--version",
+  "--faces",
+  "--only",
+  "--task",
+  "--seed",
+  "--from-multiview",
+]);
 
 interface Tasks {
   model?: string;
@@ -41,7 +50,7 @@ export async function run(argv: string[]): Promise<void> {
   if (!name)
     die(
       "usage: bun run c3d model <char> [--single] [--version v3.1-20260211] [--faces n] [--quad] " +
-        "[--low-poly] [--draft] [--autofix] " +
+        "[--low-poly] [--draft] [--autofix] [--from-multiview task_id] " +
         "[--rig] [--animate] [--only walk,run] [--fbx] [--task task_id] [--balance]",
     );
   const client = tripoClient();
@@ -86,17 +95,40 @@ export async function run(argv: string[]): Promise<void> {
   const explicit = flag(argv, "task");
   if (explicit) tasks.model = explicit;
   if (!tasks.model) {
-    const views = viewsDir(char.name);
-    const view = async (v: string) => {
-      const p = join(views, `${v}.png`);
-      return (await Bun.file(p).exists()) ? uploadFile(client, p) : undefined;
-    };
-    const front = await view("front");
-    if (!front) die(`no ${join(views, "front.png")} — run \`c3d views ${name}\` first`);
-
-    const task = has(argv, "single")
-      ? await runTask(client, client.imageToModel, { file: front, ...geometry }, "image-to-model")
+    // A Tripo image-to-multiview sheet, by task id: skip views/ and hand Tripo
+    // back four images it made itself. `original_task_id` is in the SDK types
+    // but the server rejects it (1004 "files or inputs are required"), so pass
+    // the sheet's own image URLs through the normal `files` slot.
+    const sheet = flag(argv, "from-multiview");
+    const task = sheet
+      ? await (async () => {
+          const out = ((await client.getTask(sheet)).output ?? {}) as Record<string, unknown>;
+          // The urls sit under output.generate_multiview_image, not at the top.
+          const mv = (out.generate_multiview_image ?? out) as Record<string, string>;
+          const files = [mv.front_view_url, mv.left_view_url, mv.back_view_url, mv.right_view_url];
+          if (!files[0]) die(`task ${sheet} is not a multiview sheet: ${JSON.stringify(out)}`);
+          return runTask(
+            client,
+            client.multiviewToModel,
+            { files, ...geometry },
+            "multiview-to-model (sheet)",
+          );
+        })()
       : await (async () => {
+          const views = viewsDir(char.name);
+          const view = async (v: string) => {
+            const p = join(views, `${v}.png`);
+            return (await Bun.file(p).exists()) ? uploadFile(client, p) : undefined;
+          };
+          const front = await view("front");
+          if (!front) die(`no ${join(views, "front.png")} — run \`c3d views ${name}\` first`);
+          if (has(argv, "single"))
+            return runTask(
+              client,
+              client.imageToModel,
+              { file: front, ...geometry },
+              "image-to-model",
+            );
           const [left, back, right] = await Promise.all([
             view("left"),
             view("back"),
