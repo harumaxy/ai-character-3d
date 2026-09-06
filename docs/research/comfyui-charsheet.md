@@ -383,7 +383,7 @@ fal Multiple-Angles LoRA の `<sks> left side view` / `<sks> right side view` �
 
 ### 9.2 二面顔（Janus problem）**[解決済み — 入力の出所が原因]**
 
-> **結論（2026-09-06）**: `image-to-multiview` が作った 4 面を `multiview-to-model` に渡すと **二面顔も back 無視も消える**。ComfyUI（Qwen-Image-Edit）で作った 4 面では、見た目がほぼ同一でも back が反映されない。**Tripo に渡す 4 面は Tripo 自身に作らせる。** 実測は §9.6。
+> **結論（2026-09-07 訂正）**: 原因は **left / right の取り違え**。自前の 4 面は left.png がキャラを画面右に向け、right.png が画面左に向けていた（Tripo と逆）。左右を入れ替えると二面顔も back 無視も消える。**「Tripo 自身が作った画像でないと効かない」は誤りだった** — §9.6 の実験 A が通ったのは出所ではなく向きが正しかったからで、同じ 4 面でも左右が逆なら失敗する（実験 B / C）。詳細は §9.6。
 
 以下は原因を潰していった記録。
 
@@ -446,20 +446,49 @@ bone_7 … bone_22（命名なしが 18 本）  ← 計 32 本
 - P1 は `quad` / `smart_low_poly` / `generate_parts` / `geometry_quality` 非対応、`face_limit` は 50-20000
 - rig のサーバ側デフォルトは v1.0（biped プリセットのみ）。v2.5 を使うなら明示指定が必要
 
-### 9.6 決定実験 — 4 面の出所だけを変える（2026-09-06）
+### 9.6 決定実験 — left / right の取り違え（2026-09-06 〜 07）
 
 同じ `front.png` から出発し、side / back を **誰が作ったか**だけを変えて `multiview-to-model` を 2 回実行（両方 `--draft --seed 20260906`、各 20 credits）。
 
-| 4 面の出所 | back のX字ストラップ | 後頭部 |
+すべて `--draft --seed 20260906`、各 20 credits。
+
+| # | 投入した 4 面 | side の向き | 結果 |
+|---|---|---|---|
+| A | すべて Tripo `image-to-multiview` 製 | 正しい | **成功**（背面にX字、顔なし） |
+| B | back だけ Tripo 製、front/left/right は自前 | **逆** | 失敗（二面顔、X字が前面に出る） |
+| C | front + back + right の 3 枚、すべて自前 | **逆** | 失敗（同上） |
+| D | 自前 4 面、**left と right を入れ替え** | 正しい | **成功**（背面にX字、顔なし） |
+
+A だけが通ったので当初は「Tripo 製の画像でないと効かない」と結論したが、**誤り**。A の side は画面左/右を正しく向いており、B・C の side は逆だった。出所ではなく向きが効いていた。
+
+**判定は目視に頼らないこと。** 3 回向きを直して 3 回とも外した。`facesRight()`（`src/stages/views.ts`）が頭部帯と胴体帯の重心 x を比べて機械的に判定する。実測:
+
+```
+自前  left : faces RIGHT   ← 逆
+自前  right: faces LEFT    ← 逆
+Tripo left : faces LEFT    ← 正
+Tripo right: faces RIGHT   ← 正
+```
+
+**正しい向き**: `left.png` = キャラが画面**左**を向く（キャラの左半身がカメラ側、90°）。`right.png` = 画面**右**（270°）。
+
+潰した仮説（すべて原因ではない）:
+
+| 仮説 | 検証 | 結果 |
 |---|---|---|
-| ComfyUI (Qwen-Image-Edit 2511 + Multiple-Angles LoRA) | **反映されない**（front の肩ストラップが背面に縦に伸びる） | **顔が生成される**（二面顔） |
-| Tripo `image-to-multiview`（10 credits） | **反映される** | フードの後頭部。**顔なし** |
+| EXIF / メタデータに方位情報 | ExifTool で両方ダンプ | Tripo 製は JFIF ヘッダのみ、自前は pHYs のみ。**空** |
+| アップロード経路・署名付き URL | 実験 A を `file_token` アップロードで実施 | **無関係**（効いた） |
+| PNG / JPEG の違い | 実験 A は PNG に変換して投入 | **無関係** |
+| 背景の純度 | ピクセル統計 | 自前 255 純白 / Tripo 254（JPEG ノイズ）。**自前の方がきれい** |
+| 被写体のスケール・位置 | bbox 実測 | 自前 ±7px / Tripo ±25px。**自前の方が揃っている** |
 
-投入した 4 面は構図・向き・被写体スケールがほぼ同一（§9.2 の bbox 実測: 自前 ±7px / Tripo 製 ±25px で **自前の方が揃っている**）。それでも結果が割れる。**画像の「整い方」ではなく、生成元が Tripo 自身かどうかで決まる。**
+#### 9.6.1 結論
 
-推測（未検証）: `image-to-multiview` の出力が `multiview-to-model` の学習分布そのものなので、外部生成の 4 面は分布外として back の重みが落ちる。
+**ComfyUI 製の 4 面で問題なく通る。`image-to-multiview` に 10 credits を払う必要はない。** 実験 D（自前 4 面の left/right を入れ替えただけ）が A と同等の結果を出した。
 
-**運用方針**: Tripo に渡す 4 面は `image-to-multiview` に作らせる。front だけ ComfyUI で作り込む。追加コストは 10 credits、代わりに `c3d views` の ComfyUI 実行（数分）が不要になる。デザインの細部が Tripo の解釈に委ねられるのが代償。
+left / right が逆だと Tripo は 90° と 270° に矛盾する側面を与えられ、顔をどちらに置くか決められずに両側へ作る。これが二面顔の正体で、back が無視されて見えたのも同じ原因（座標系が破綻するので back の情報を置く先がない）。フードもガスマスクも Janus も関係なかった。
+
+検証費用: 実験 A-D で 80 credits + `image-to-multiview` 10 credits。**目視で向きを判定して 3 回連続で外したのが遠回りの原因**なので、`facesRight()` を通して機械的に決める。
 
 ### 9.7 SDK の型を信じると外す点 **[確定]**
 

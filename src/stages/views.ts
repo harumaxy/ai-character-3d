@@ -18,9 +18,11 @@
  *
  * Only one side is generated. Neither the LoRA nor plain instructions steer
  * "left" vs "right" reliably — the same prompt returns either flank depending
- * on the seed — and two side views that disagree make Tripo build a two-faced
- * head with twisted feet. left.png is the mirror of right.png: Tripo needs a
- * silhouette that agrees with front/back, and gear placement comes from those.
+ * on the seed — so the side that comes back is measured, not trusted, and the
+ * pair is assigned from what the picture actually shows. Getting this backwards
+ * is what makes Tripo build a two-faced head with twisted feet: it reads
+ * left.png as 90 degrees and right.png as 270, and a swapped pair leaves no
+ * consistent way to place the face.
  */
 
 import { basename, join } from "node:path";
@@ -63,6 +65,33 @@ const VALUE_FLAGS = new Set(["--image", "-i", "--only", "--seed", "--matte", "--
  * themselves are generated (or ESRGAN'd) larger.
  */
 const CANVAS = 1024;
+
+/**
+ * Which way the subject faces. A head sticks out ahead of the torso, so the
+ * centroid of the head band sits towards the side the character looks at.
+ */
+export async function facesRight(src: string | Buffer): Promise<boolean> {
+  const { data, info } = await sharp(src)
+    .removeAlpha()
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { width: w, height: h } = info;
+  const centroid = (from: number, to: number) => {
+    let sum = 0;
+    let n = 0;
+    for (let y = Math.round(h * from); y < Math.round(h * to); y++) {
+      for (let x = 0; x < w; x++) {
+        if (data[y * w + x]! < 240) {
+          sum += x;
+          n++;
+        }
+      }
+    }
+    return n ? sum / n : w / 2;
+  };
+  return centroid(0.02, 0.15) > centroid(0.35, 0.7);
+}
 
 /** Square the image onto the canvas with the subject centred. */
 const square = (src: string | Buffer, dest: string, bg: string) =>
@@ -142,11 +171,16 @@ export async function run(argv: string[]): Promise<void> {
   }
   api?.destroy();
 
-  // right.png mirrored is the left view; see the header note.
-  const right = join(out, "right.png");
-  if (!dry && (await Bun.file(right).exists())) {
-    const left = join(out, "left.png");
-    await sharp(right).flop().png().toFile(left);
-    console.log(`[views] left = mirror of right.png -> ${left}`);
+  // Assign the pair from the picture, not from the prompt we sent. Tripo reads
+  // left.png at 90 degrees (character facing screen-left, its left flank to the
+  // camera) and right.png at 270.
+  const side = join(out, "right.png");
+  if (!dry && (await Bun.file(side).exists())) {
+    const buf = Buffer.from(await Bun.file(side).arrayBuffer());
+    const right = await facesRight(buf);
+    const mirrored = await sharp(buf).flop().png().toBuffer();
+    await Bun.write(side, right ? buf : mirrored);
+    await Bun.write(join(out, "left.png"), right ? mirrored : buf);
+    console.log(`[views] side faces ${right ? "right" : "left"}; mirrored for the other flank`);
   }
 }

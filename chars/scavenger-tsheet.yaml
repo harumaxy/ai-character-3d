@@ -1,0 +1,28 @@
+name: scavenger-tsheet
+
+# The design. Prose (FLUX.2 / Qwen) — describe the character, not the framing;
+# the concept stage adds "full body, A-pose, white background" itself.
+positive: |
+  a young post-apocalyptic wasteland scavenger,
+  full face gas mask completely covering the face,
+  two large circular opaque black lenses, completely solid black like dark sunglasses,
+  no eyes or face visible behind the lenses, two round filters on the sides,
+  hooded olive jacket, torn leather straps,
+  bandaged forearms, fingerless gloves,
+  tan cargo pants, worn heavy boots,
+  small leather satchel on the hip, determined posture
+
+negative: |
+  blurry, text, watermark, weapon, cape, long flowing hair covering the face,
+  extra limbs, deformed hands, low quality
+
+# Appended to every prompt. Flat, clean colours bake into textures better than painterly shading.
+style: |
+  realistic 3D game character, detailed textures, natural skin tones, realistic fabric materials,
+  gritty worn appearance, realistic lighting and shadows, photorealistic rendering
+
+# Standing height in metres. Blender frames the camera from this.
+height: 1.7
+
+# Tripo task overrides (see docs/research/tripo-ai.md). Empty = stage defaults.
+tripo: {}
