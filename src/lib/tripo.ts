@@ -81,5 +81,8 @@ export function modelUrl(task: Task): string {
 export async function download(url: string, dest: string): Promise<void> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`tripo download: HTTP ${res.status} ${url}`);
-  await Bun.write(dest, res);
+  // Streaming the Response straight into Bun.write spun at 100% CPU forever on
+  // a 42MB glb (bun 1.3.14, Windows) while curl fetched the same URL in
+  // seconds. Buffer it: these are tens of megabytes, not gigabytes.
+  await Bun.write(dest, await res.arrayBuffer());
 }
