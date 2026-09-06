@@ -130,7 +130,7 @@ Negative: `worst quality, low quality, score_1, score_2, score_3, artist name, b
 ```
 - 語彙: azimuth = `front view | front-left quarter view | left side view | back-left quarter view | back view | back-right quarter view | right side view | front-right quarter view`、elevation = `low-angle shot | eye-level shot | elevated shot | high-angle shot`、distance = `close-up | medium shot | wide shot`。
 - 全身を確実に収めたい場合は `wide shot`（×1.8）を試す。4 面すべて同じ distance 語にすること。
-- 「Tripo の left = キャラの左側面（キャラの左手が手前）」か「カメラから見て左」かは Tripo 側で明記なし **[要確認]**。実運用では front から時計回りに回して、Tripo にアップロード後のプレビューで整合を確認する。
+- Tripo の left/right 定義は公式に明記なし。**2026-09-06 実測で確定**: `left_view` = キャラ **画面左**向き、`right_view` = キャラ **画面右**向き。カメラ位置基準でなく **絵の中でキャラがどっち向くか** で覚える。→ §9.1
 - 日本語事例（note/snapreplica）では `right side view / back view / front view` + `eye-level shot medium shot` で 3 面図を作り、Hunyuan 3D に複数枚入力して「単画像より髪・服の背面再現が明らかに良い」と報告。
 
 **LoRA なし（素の 2511）** — 保持条件を列挙する「preserve 型」の書き方が 2509/2511 で有効:
@@ -160,7 +160,7 @@ Keep the same A-pose, outfit, proportions, flat lighting and plain white backgro
 1. **Qwen-Image-Edit 2511 + Multiple-Angles LoRA（+Lightning）を 1 ビューずつ** → bbox 正規化。カメラ語彙で距離・仰角が固定され、破綻したビューだけ再抽選できるのが決定的に有利。
 2. **klein 9B + TripleView LoRA** を「セカンドオピニオン」に。1 枚で style/照明が揃うため、(1) の back が崩れたときの back 候補として使う。
 3. **MV-Adapter i2mv** は「本当にマルチビュー整合な画像」を出す唯一のローカル手段だが、SDXL 品質 / 768² / 13-14GB のため、テクスチャ品質より形状一貫性を優先するときの選択肢。Tripo に渡す前に (1) の高品質 front を `texture_alignment: original_image` で活かす、という組合せも可。
-4. 自前で 4 面を作るのが難しいキャラ（複雑な装備など）は、**クリーンな front だけ作って Tripo `image-to-multiview` → `multiview-to-model`** に任せるのが最も破綻が少ない可能性が高い **[要確認]**。
+4. 自前で 4 面を作るのが難しいキャラ（複雑な装備など）は、**クリーンな front だけ作って Tripo `image-to-multiview` → `multiview-to-model`** に任せる手がある。ただし **2026-09-06 実測**: Tripo 製 4 面 と 自前 4 面 は構図・向き・スケールほぼ同一（自前の方が整合わずかに良い）。**二面顔は入力起因でない → これでは直らない**。→ §9.2
 
 ---
 
@@ -342,7 +342,9 @@ VRAM 運用: Qwen-Edit 2511 Q5_0 + Qwen2.5-VL 7B fp8 の組合せは 16GB で動
 
 ## 8. 未確定事項・注意点まとめ
 
-- Tripo が受け取る left/right が「キャラの左」か「観察者の左」か公式記載なし **[要確認]** → 初回は Tripo プレビューで確認。
+- ~~Tripo が受け取る left/right~~ → **解決済み**。§9.1。
+- fal Multiple-Angles LoRA の `left side view` / `right side view` は **seed 次第で向きが反転する**。同じプロンプトで両方とも同じ側面が出ることもある → 向き指定に使えない。片側生成 → 水平反転で対を作る。§9.1
+- **二面顔（Janus problem）**: フードで顔が隠れるキャラで後頭部にも顔が生成される。入力 4 面をどう整えても再現 **[未解決]**。§9.2
 - Multiple-Angles LoRA と Lightning 4-step の併用はテンプレート/チュートリアルで一般的だが、品質低下の有無は自環境で A/B すること **[コミュニティ報告]**。
 - MV-Adapter i2mv のスタイライズドキャラ品質、および 768² 出力の Tripo 適性は未検証 **[要確認]**。
 - RMBG-2.0 のライセンス（非商用）と FLUX.2 klein 9B / Ideogram 4 / Anima の非商用条項に注意（生成画像の商用可否はモデルごとに異なる）。
@@ -358,3 +360,84 @@ VRAM 運用: Qwen-Edit 2511 Q5_0 + Qwen2.5-VL 7B fp8 の組合せは 16GB で動
 4. **クリーンアップ** — ComfyUI-RMBG（Lucida / BiRefNet-HR, white + alpha）→ `MaskBoundingBox+` / `ImageCropByMaskAndResize` で bbox 切り出し → **キャラ高さ 1800px に統一** → 2048×2048 中央パディング → 4x-AnimeSharp 等の保守的 ESRGAN で解像度確保（必要時）。影が残るなら Qwen-Edit「flat even lighting」編集、または Hy3DDelightImage（低解像度に注意）。
 5. **書き出し・投入** — `front.png, left.png, back.png, right.png`（2048², 白 or 透過 PNG）を Tripo multiview-to-model（`[front, left, back, right]`、`texture_alignment: original_image`、`enable_image_autofix` は最初は off）へ。ComfyUI 内から完結させるなら `TripoMultiviewToModelNode`。
 6. **フォールバック** — 4 面の整合が取れない複雑なキャラは、front.png のみを Tripo `image-to-multiview` に渡して 4 面を作らせ、それを multiview-to-model に投入する。ローカル完結なら Hunyuan3D-2mv（front/left/back）。
+
+---
+
+## 9. 実測ログ — scavenger（2026-09-06）
+
+ComfyUI 4 面 → Tripo `multiview-to-model`（`v3.1-20260211`, `texture_quality: detailed`, `orientation: align_image`）→ rig → retarget を実行した記録。
+
+実測クレジット: multiview（HD テクスチャ込み）40 / auto rig 25 / retarget 10 per animation / image-to-multiview 10。
+
+### 9.1 Tripo の left/right 定義 **[確定]**
+
+`image-to-multiview` に front.png を投入（10 credits）、出力 4 面を目視:
+
+- `left_view` = キャラ **画面左**向き
+- `right_view` = キャラ **画面右**向き
+- `back_view` = 真後ろ。フードのキャラなら後頭部（顔なし）
+
+カメラ位置（キャラの左側にカメラ）で考えると混乱する。**絵の中でキャラがどっちを向くか**で覚える。
+
+fal Multiple-Angles LoRA の `<sks> left side view` / `<sks> right side view` は **seed 次第で向きが反転**。同一プロンプトで両方とも同じ側面が出た実例あり → 向き指定に使えない。**片側だけ生成 → `sharp().flop()` で水平反転**して対を作るのが確実。装備の左右は反転するが、front/back が真値を持つので実害は小さい（`src/stages/views.ts` はこの方式）。
+
+### 9.2 二面顔（Janus problem）**[未解決]**
+
+症状: フード + フルフェイスガスマスクのキャラで **後頭部にも顔が生成**。フードを貫通。足首も捻れてブーツが変形。
+
+切り分け済み（**すべて原因ではない**）:
+
+| 疑い | 検証方法 | 結果 |
+|---|---|---|
+| left/right の入れ替わり | LoRA 出力そのまま / 左右逆 / ミラー の 3 通りで生成 | **全部 同じ症状** |
+| 4 面のスケール・位置ズレ | 非白ピクセルの bbox を実測 | 被写体高さ 971-978px（±7px）。Tripo 自身の出力（±25px）より整合が良い |
+| 入力画像の作りが悪い | `image-to-multiview` の Tripo 製 4 面と比較 | 構図・向き・背景ほぼ同一。back も同じくフードで顔なし |
+
+→ **入力側に原因なし。`multiview-to-model` の再構成側**（「頭には顔がある」プライアが back view を上書き）。
+
+未検証の対策:
+
+- `model_seed` を変えて再抽選（20 credits / 回、`--draft`）
+- `geometry_quality: detailed`（+20 credits）
+- `P1-20260311`（別アーキテクチャ、ゲーム向けローポリ、multiview 対応）
+- **デザイン側で回避** — フードで顔が隠れる構造そのものが Janus を誘発。8 方向スプライトは後頭部が必ず映る → **フードなしデザインが安全**
+- Blender で後頭部の顔を手動削除（1 体だけなら最速）
+
+### 9.3 出力メッシュ **[確定]**
+
+`face_limit` 未指定・v3.1 の実測: **1,445,404 面 / 749,288 頂点 / 4K テクスチャ 3 枚（Color / NormalGL / ORM）**、GLB 43MB。スプライトレンダには過剰。
+
+- 生成時の `face_limit` は **課金なし**（[API 価格表](https://developers.tripo3d.ai/en/pricing)のアドオン一覧に無い）
+- `smart_low_poly: true` は **+10 credits**、face_limit は 500-20000 に制限。「複雑な入力では失敗することがある」と公式注記
+- 後処理の Retopology は 30（v2.0 Smart）/ 10（v1.0 Basic）credits → **生成時にやる方が安い**。かつ **メッシュ編集はリグを消す**ので、どのみち生成時が正解
+
+出力モデルは **+X が正面**（`glTF は -Y 向き` の常識が通らない）。tripo-cli の convert デフォルトも `export_orientation: '+x'` で一致。`c3d render --facing` で吸収する。
+
+### 9.4 リグ **[未解決]**
+
+`spec: "mixamo"` を送信 → **サーバは受理**（`tripo task get <id>` の `input.spec` に `"mixamo"` が残る）。だが rig `v2.5-20260210` の出力ボーンは:
+
+```
+tripo::Root, tripo::Spine_0, tripo::Head_0, tripo::Head_1,
+tripo::0_Right_Limb_0 … tripo::1_Left_Limb_2,
+bone_7 … bone_22（命名なしが 18 本）  ← 計 32 本
+```
+
+**mixamo 命名にならない。**
+
+[公式 rig ドキュメント](https://developers.tripo3d.ai/en/docs/animations-rig)は spec とリグ版の対応を書いていない。`v1.0-20240301` = biped 専用・90+ プリセット（旧世代）、`v2.5-20260210` = 非人型対応の新スケルトン。**mixamo 命名は v1.0 側の機能の可能性** **[未検証、25 credits]**。
+
+[StraySpark の実測](https://www.strayspark.studio/blog/ai-auto-rigging-showdown-2026-tripo-meshy-cascadeur-mixamo)では「ボーン名は認識可能な規約に従う」「UE の Manny/Quinn に近く、retarget は足ボーンのオフセット程度の微調整で済んだ」。弱点として肩・胸のウェイトが過度に滑らかで腕上げ時にメッシュが垂れる、顎のウェイトがノイジー。
+
+### 9.5 ツール **[確定]**
+
+`tripo-cli`（npm、グローバル）は薄いラッパではなく、`dist/knowledge/*.js` にサーバ側バリデーションを写したドメイン知識を持つ。`tripo docs --llm` の SKILL は `.claude/skills/tripo-cli/SKILL.md` にコピー済み。
+
+そこから拾った、公式ドキュメントに散っている事実:
+
+- `retarget` は `animations` 配列で **1 タスクに最大 5 モーション**（課金はモーション単位で不変）
+- convert の `export_orientation` は `+x` / `-x` / `+y` / `-y`、**デフォルト `+x`**
+- convert の非デフォルト引数は "complex convert" 課金ティア（`pivot_to_center_bottom: true` も該当）
+- `quad: true` は **出力を FBX に強制**（quad は glTF に格納できない）
+- P1 は `quad` / `smart_low_poly` / `generate_parts` / `geometry_quality` 非対応、`face_limit` は 50-20000
+- rig のサーバ側デフォルトは v1.0（biped プリセットのみ）。v2.5 を使うなら明示指定が必要
