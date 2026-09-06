@@ -7,3 +7,4 @@ out
 motions/**/*.fbx
 motions/**/*.glb
 .tripo
+__pycache__

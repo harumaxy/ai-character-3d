@@ -10,11 +10,14 @@ AI キャラクター生成の 3D ワークフロー。ComfyUI（キャラデザ
 bun run c3d concept <char>            # ComfyUI: 正面 A-pose 候補
 bun run c3d views   <char>            # ComfyUI: back/left/right 派生 → Tripo 用 4 面
 bun run c3d model   <char> --animate  # Tripo: 3D 化 → リグ → プリセットアニメ GLB
+bun run c3d retarget <char> --dry-run # Blender headless: Auto-Rig Pro Remap で motions/ を焼く
 bun run c3d render  <char>            # Blender headless: 8 方向 × フレーム PNG（color + normal）
 bun run c3d sheet   <char> --size 128 # スプライトシート PNG + JSON
 ```
 
 `chars/<name>.yaml` がキャラ定義。生成物は `out/chars/<name>/` 配下（gitignore）。
+モーション素材は `motions/mixamo/` `motions/quaternius/`（FBX は gitignore、README のみ）。
+`retarget` は `out/chars/<name>/rig.blend`（ARP でリグ・スキニング済み、手作業）を要求する。手順は `docs/research/blender-arp-retarget.md`。
 
 ## コード編集後
 

@@ -4,6 +4,7 @@
  *   bun run c3d concept <char>            ComfyUI: front-view design candidates
  *   bun run c3d views   <char> --hero f   ComfyUI: front/back/left/right refs for Tripo
  *   bun run c3d model   <char>            Tripo: multiview -> GLB/FBX (+ rig)
+ *   bun run c3d retarget <char>           Blender headless: Mixamo/UAL clips -> anim GLBs
  *   bun run c3d render  <char>            Blender headless: 8-direction sprite frames
  *
  * Stages are imported lazily so a broken sibling cannot stop the working ones.
@@ -13,6 +14,7 @@ export const STAGES = {
   concept: () => import("./stages/concept"),
   views: () => import("./stages/views"),
   model: () => import("./stages/model"),
+  retarget: () => import("./stages/retarget"),
   render: () => import("./stages/render"),
   sheet: () => import("./stages/sheet"),
 } satisfies Record<string, () => Promise<{ run(argv: string[]): Promise<void> }>>;
