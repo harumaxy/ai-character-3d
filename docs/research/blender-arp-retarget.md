@@ -2,7 +2,7 @@
 
 調査日: 2026-09-07。Tripo のオートリグを使わず、Blender ローカルでリグ・スキニング・リターゲットを完結させる経路の手順と実装メモ。
 
-Tripo のリグを捨てた理由は §5。結論だけ言うと、**最終出力がスプライト PNG なのでボーン命名規約はどうでもいい**。Blender の中でリターゲットが通ればよく、そのための道具は既に手元にある。
+Tripo のリグを捨てた理由は §6。結論だけ言うと、**最終出力がスプライト PNG なのでボーン命名規約はどうでもいい**。Blender の中でリターゲットが通ればよく、そのための道具は既に手元にある。
 
 ## 1. 前提
 
@@ -23,12 +23,47 @@ ARP の `blender_manifest.toml` は `blender_version_min = "2.8.0"` で上限な
 
 `c3d model <char>` が出した `out/chars/<char>/model/model.glb` から始める。
 
-1. **向きを揃える。** Tripo の出力は **+X が正面**。Blender で import したあと Z 軸まわりに回して **-Y 正面**にし、`Object > Apply > Rotation` で確定する。これをやっておくと後段が全部デフォルト設定で通る（`c3d render` の `--facing` が `-y` 既定）。
+1. **向きとスケールを揃えて Apply する。** Tripo の出力は **+X 正面・身長 1.0 単位**（正規化されている）。
+   Z 軸まわりに **-90°** 回して -Y 正面にし、`chars/<name>.yaml` の `height` に合わせて拡大してから
+   `Object > Apply > Rotation & Scale`。ついでに足が z=0 に乗るよう移動して Location も Apply する。
+
+   `scripts/blender/orient_model.py` がやる。GLB を読んで整えた `.blend` を吐くところまで headless:
+
+   ```bash
+   "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" --background \
+       --python scripts/blender/orient_model.py -- \
+       --model out/chars/scavenger/model/model.glb --height 1.7 \
+       --blend out/chars/scavenger/rig.blend
+   ```
+
+   起動済みの Blender の中（Text Editor / MCP）でアクティブオブジェクトに掛けるなら
+   `--model` を省いて `-- --height 1.7`。
+
+   回転量は bbox から決める。**水平方向で広いほうが肩幅**なので、Y のほうが広ければ ±X 正面 →
+   -90° 回す。X のほうが広ければ既に ±Y 正面なので何もしない（再実行しても壊れない）。
+   Tripo は +X 正面だが、背中が正面に来たら `--yaw 90` で逆に回す。
+
+   確認 1: 出力の `dimensions` が **X = 肩幅、Y = 厚み**になっていること。
+   確認 2: **Numpad 1（Front）で顔が見えること**。背中なら `--yaw 90` でやり直す。
+
+   実測 (scavenger, 2026-09-07): `(0.2329, 0.4951, 1.0)` → `(0.8417, 0.3959, 1.7)`、
+   `location (0,0,0)`、`scale (1,1,1)`、足 z=0 / 頭 z=1.7。
+
+   なぜやるか:
+   - **リターゲットは world 空間の回転をコピーする。** Mixamo FBX は import 後 -Y 正面。ターゲットの
+     レストポーズが +X のままだと 90° ずれた状態でベイクされ、`Redefine Rest Pose` で補正する羽目になる
+   - **Mixamo / UAL のクリップは実寸の人体で作られている。** ARP `auto_scale` はソース側を
+     ターゲットに合わせて縮めるので、ターゲットが 1.0 単位のままだと歩幅も 1.0 単位系になる
+   - **`c3d render` は `chars/<name>.yaml` の `height` を `--height` に渡し、`ortho_scale = height * margin`
+     を決める。** モデルが 1.0 単位のままだと 1.7 m 相当の枠に 1.0 m の被写体が写り、キャラが小さくなる
+   - ARP は未適用のオブジェクト変換で壊れる（`arp.freeze_armature` operator が存在する理由）
 2. **ARP Smart。** `Auto-Rig Pro` タブ → `Smart` → `Get Selected Objects` → 顎・首・胸・肩・手首・足首・膝のマーカーを配置 → `Go!`。
    フード付き・ガスマスクのキャラは顎と首の自動検出が外れやすい。マーカーは目視で直す。
 3. **`Match to Rig`** でリグを生成。
-4. **スキニング。** メッシュ → リグの順に選択して `Bind`。ARP の Voxelize バインドで足りなければ Voxel Heat Diffuse Skinning を使う。フードや装備が重なった箇所のウェイトが破綻していないか、腕を上げて確認する。
-5. `out/chars/<char>/rig.blend` として保存。
+4. **スキニング。** メッシュ → リグの順に選択して `Bind`。エンジンの選び方は §8。
+5. `out/chars/<char>/rig.blend` として保存。**Bind が通ったら真っ先に保存する。**
+6. 検証: `blender --background out/chars/<char>/rig.blend --python scripts/blender/check_bind.py`
+   腕↔胴の最小隙間と、腕ボーンのウェイトが漏れた非腕頂点の割合を出す。
 
 以降の工程はこの `.blend` を入力に headless で回る。
 
@@ -44,8 +79,13 @@ bun run c3d sheet scavenger --size 128
 `src/motions.ts` の `MOTIONS` が入力。`fbx` / `action` / `preset` を持つエントリだけが対象。
 
 - `scripts/blender/retarget.py` が ARP Remap の operator を順に叩く
-- 出力は `out/chars/<char>/model/anim/<id>.glb`（メッシュ + アーマチュア + 1 クリップ）。**`render_sprites.py` は無改修**で読める
+- 出力は `out/chars/<char>/anim.blend` 1 個。`rig.blend` にモーションごとの名前付きアクションを
+  ベイクして保存する。`render_sprites.py` はそれを開いてアクションを差し替えるだけ
 - FBX は 1 ファイルにつき 1 回だけ import する（Quaternius UAL は 1 ファイルに 45 クリップ入っていて、毎回読み直すと遅い）
+- **中間の GLB は書かない。** 1 モーション 1 GLB にすると 27k tri のメッシュとテクスチャが本数分
+  複製され（実測 5 本で 25MB、anim.blend なら 21MB）、さらに書き出し→読み直しの往復で
+  glTF importer の不可視オブジェクトが混入する（§7）。ゲームエンジン向けの書き出しは
+  Auto-Rig Pro の Export タブの仕事で、このスクリプトの守備範囲ではない
 
 **必ず `--dry-run` を先に通すこと。** 対応が取れていないプリセットでも黙ってベイクは成功する。脚が丸ごと落ちていても気付けるのは dry-run のログだけ。
 
@@ -103,6 +143,15 @@ bpy.ops.arp.retarget('EXEC_DEFAULT', frame_start=s, frame_end=e)
 
 ARP Smart のマーカー配置は目視判断なので MCP に投げる意味はない。手でやる。
 
+**`execute_blender_code` は Blender のメインスレッドで走る。数秒を超える処理を投げるな。**
+UI ごとフリーズし、120 秒でソケットが切れる。実際に 32k 頂点 × 68 ボーンの総当たり
+（220 万回の線分距離）を投げて Blender を落とし、保存していなかったリグを失った (2026-09-07)。
+
+- 重い計測・バッチは `blender --background --python <script>` で別プロセスに出す
+- 総当たりを書く前に `mathutils.kdtree.KDTree` を使う。同じ計測が 1.5 秒で終わる
+  （`scripts/blender/check_bind.py`）
+- **Smart と Bind が通ったら、まず `rig.blend` を保存する。** やり直しが一番高い
+
 ## 6. Tripo のリグを使わない理由
 
 `spec: "mixamo"` を送ってもサーバは受理するだけで、rig `v2.5-20260210` の出力は:
@@ -122,9 +171,87 @@ bone_7 … bone_22（無名 18 本）  計 32 本
 ## 7. 落とし穴
 
 - **`motions/**/*.fbx` は gitignore。** クローン直後は `MOTIONS` のカタログはあるが実ファイルが無い。入手手順は `motions/mixamo/README.md` と `motions/quaternius/README.md`
-- **ベイク済みアクションは `.blend` に溜まる。** GLB 書き出しは `export_animation_mode="ACTIVE_ACTIONS"` を使う。`"ACTIONS"` にすると全クリップが全ファイルに入る
-- **Tripo GLB は +X 正面。** §2-1 で -Y に直しておかないと `c3d render --facing +x` が必要になり、`c3d retarget` を挟んだ後は何が正面か分からなくなる
+- **ベイク済みアクションは誰からも参照されないと保存時に消える。** `use_fake_user = True` を立てる
+- **glTF importer はボーン表示用の不可視 Icosphere（半径 1）を作り、`glTF_not_exported` コレクションに
+  入れる。** 344 本のボーンのカスタムシェイプとして使われる実体のあるメッシュなので、素朴に
+  「import して MESH を全部集める」と bbox が 2m の球になり、カメラが体ではなく球に合う。
+  GLB 経由をやめたので現在は踏まないが、GLB を読む処理を足すときは必ず除外すること
+- **glTF importer は `rotation_mode` を `QUATERNION` にする。** `o.rotation_euler = (...)` はエラーも
+  警告も出さずに無視される。location と scale は別プロパティなので効いてしまい、「スケールと位置は
+  直ったのに向きだけ変わらない」という分かりにくい壊れ方をする。`matrix_world` を組むか、先に
+  `o.rotation_mode = 'XYZ'` を入れる
+- **Tripo GLB は +X 正面・身長 1.0 単位に正規化されている。** 実測 (scavenger): glTF bbox が
+  X 0.233 / Y 1.000 / Z 0.495 で、Blender import 後は X 0.233（薄い）/ Y 0.495（肩幅）/ Z 1.000（身長）。
+  肩幅が Y に伸びている＝ ±X を向いている。§2-1 で回転とスケールを直しておくこと
 - **Mixamo の DL 設定**は Skin = "Without Skin"、FBX Binary、30 fps（`motions/mixamo/README.md`）
+
+## 8. バインドエンジンの選び方 — 腕が胴に溶ける問題
+
+Tripo の A ポーズは手が腰のすぐ横に垂れる。scavenger の実測 (2026-09-07):
+
+| 帯 | 腕↔胴 表面の最小隙間 |
+|---|---|
+| 胴 z1.15–1.30 | 4.7 mm |
+| **腰 / ポーチ z0.95–1.15** | **3.3 mm** |
+| 腿 z0.80–0.95 | 4.7 mm |
+
+ボリューム系のバインドは 1 ボクセルより近いものを溶接する。デフォルト設定では
+腰のポーチが手のボーンに引っ張られる。
+
+### `PSEUDO_VOXELS`（ARP 内蔵 "Voxelized"）の上限
+
+`arp_pseudo_voxels_type = '1'` は Remesh SHARP の `octree_depth` に
+`arp_pseudo_voxels_resolution`（既定 7、3–12）をそのまま入れる。身長 1.7 m なら:
+
+```
+depth  7 -> 13.28 mm   ← 既定。3.3 mm の隙間を余裕で埋める
+depth  9 ->  3.32 mm
+depth 10 ->  1.66 mm
+```
+
+ただし `auto_rig.py:21093-21110` にリメッシュ後の縮小ループがある:
+
+```python
+dist_threshold = (larger_dim / larger_scale) / 1000   # 1.7 m / 1000 = 1.7 mm
+while len(voxelized_object.data.polygons) > 70000 and while_counter < 40:
+    bpy.ops.mesh.remove_doubles(threshold=dist_threshold)
+    ...
+    dist_fac = 1.3        # パスごとに閾値が 1.3 倍
+```
+
+解像度を上げるとリメッシュ出力が肥大 → ループに入る → 閾値が 1.7 → 2.2 → 2.9 → 3.8 mm と育ち、
+`remove_doubles` は連結性に関係なく閾値内の頂点を溶接するので、分離したはずの隙間がまた塞がる。
+**解像度を上げるだけでは打ち消されうる。**
+
+`type = '2'` はさらに狭い。`voxel_size = ((dim/scale)*0.003) / (res/8)` なので:
+
+```
+res 7 (内部で 6 に) -> 6.80 mm
+res 9 (内部で 10 に) -> 4.08 mm
+res 12              -> 3.40 mm   ← 最大解像度でも 3.3 mm を切れない
+```
+
+**type 2 では原理的にこのポーチを分離できない。**
+
+### 選択肢（安い順）
+
+1. **`HEAT_MAP`**（"Heat Maps"）。サーフェス法なので空隙を越えて滲むことが原理的にない。
+   ARP 自身の説明は「重ね着や小物で不整合になりうる」。フード付きキャラでは別の場所が
+   崩れる可能性があるが、腕↔胴のリークは確実に消える。まずこれを試すのが安い。
+2. **`VHDS`**（Voxel Heat Diffuse Skinning アドオン）。`scn.voxel_resolution` は既定 128・最大 1024。
+   身長 1.7 m なら 128 → 13.3 mm、512 → 3.3 mm、**1024 → 1.66 mm**。C 実装で縮小ループが無いので
+   上げた解像度がそのまま効く。時間は掛かるが本命。
+3. **局所リバインド。** `scn.arp_bind_sel_verts = True` + `scn.arp_bind_selected_bones = True` で、
+   ポーチと脇の頂点だけを選び、`spine_01/02/03.x` と `root.x` だけを選んで
+   `bpy.ops.arp.bind_to_rig()`。良いウェイトを壊さずに壊れた領域だけ焼き直す。
+4. **`PSEUDO_VOXELS` の resolution 9–10。** 1 クリックなので試す価値はあるが、上の縮小ループで
+   打ち消される公算。
+
+### 予防
+
+根本原因は手が腰から 3.3 mm しか離れていない A ポーズ。`chars/<name>.yaml` の concept を
+T ポーズかもっと開いた A ポーズにすれば数センチの余裕ができ、どのエンジンでも素直に通る。
+concept ステージが `full body, A-pose, white background` を自動で付けているので、変えるならそこ。
 
 ## 出典
 

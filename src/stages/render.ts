@@ -3,16 +3,16 @@
  *                    [--engine eevee|workbench] [--light camera|world]
  *                    [--passes color,normal] [--aa on|off] [--blender exe]`
  *
- * Blender headless: for every motion under out/chars/<char>/model/anim/<id>.glb
- * render N frames x 8 directions to out/chars/<char>/render/<id>/<dir>/<k>.png
- * (+ <k>.normal.png). No ComfyUI involved.
+ * Blender headless: open out/chars/<char>/anim.blend (written by `c3d retarget`)
+ * and, for every motion whose action it holds, render N frames x 8 directions to
+ * out/chars/<char>/render/<id>/<dir>/<k>.png (+ <k>.normal.png). No ComfyUI.
  */
 
 import { join } from "node:path";
 import { runBlender } from "../lib/blender";
 import { loadChar } from "../lib/chars";
-import { ensureDir, flag, num, pick, positional } from "../lib/cli";
-import { modelDir, renderDir } from "../lib/paths";
+import { die, ensureDir, flag, num, pick, positional } from "../lib/cli";
+import { animBlend, renderDir } from "../lib/paths";
 import { MOTIONS } from "../motions";
 
 const VALUE_FLAGS = new Set([
@@ -30,9 +30,6 @@ const VALUE_FLAGS = new Set([
   "--facing",
 ]);
 
-export const animPath = (char: string, motion: string) =>
-  join(modelDir(char), "anim", `${motion}.glb`);
-
 export async function run(argv: string[]): Promise<void> {
   const name = positional(argv, VALUE_FLAGS);
   if (!name) {
@@ -45,19 +42,18 @@ export async function run(argv: string[]): Promise<void> {
   const char = await loadChar(name);
   const motions = pick(argv, "only", MOTIONS);
 
-  const entries = [];
-  for (const m of motions) {
-    const file = animPath(char.name, m.id);
-    if (!(await Bun.file(file).exists())) {
-      console.error(
-        `[render] ${m.id}: missing ${file} — run \`c3d model ${name} --animate\` first`,
-      );
-      process.exitCode = 1;
-      continue;
-    }
-    entries.push({ id: m.id, file, frames: m.frames, loop: m.loop });
-  }
-  if (!entries.length) process.exit(1);
+  const blend = animBlend(char.name);
+  if (!(await Bun.file(blend).exists()))
+    die(`[render] no ${blend} — run \`c3d retarget ${name}\` first`);
+
+  // One action per motion, by id. render_sprites.py checks they are all there
+  // and lists what the .blend does have if one is missing.
+  const entries = motions.map((m) => ({
+    id: m.id,
+    action: m.id,
+    frames: m.frames,
+    loop: m.loop,
+  }));
 
   const out = renderDir(char.name);
   await ensureDir(out);
@@ -68,11 +64,15 @@ export async function run(argv: string[]): Promise<void> {
   await runBlender({
     script: "render_sprites.py",
     exe: flag(argv, "blender"),
+    blend,
     args: [
       "--motions",
       motionsJson,
       "--out",
       out,
+      // The metre height the camera frames, so every character of a party comes
+      // out at one pixels-per-metre. rig.blend must be at real scale for it to
+      // mean anything — see orient_model.py.
       "--height",
       String(char.height),
       ...opt("size", String(num(argv, "size", 512))),

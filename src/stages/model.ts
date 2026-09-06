@@ -1,63 +1,40 @@
 /**
- * `c3d model <char> [--single] [--version v3.1-20260211] [--faces 20000] [--quad]
- *                   [--low-poly] [--draft] [--autofix] [--from-multiview task_id]
- *                   [--rig] [--animate] [--only walk,run] [--fbx] [--task id] [--balance]`
+ * `c3d model <char> [--version v3.1-20260211] [--faces 20000] [--low-poly]
+ *                   [--draft] [--seed n]`
  *
- * Tripo API v3: views -> 3D model (+ rig, + preset animations, + FBX for Blender).
+ * Tripo API v3: the four views -> one textured mesh. That is all Tripo does in
+ * this pipeline; rigging and animation are Auto-Rig Pro's job (`c3d retarget`).
  *
- *   out/chars/<char>/model/model.glb            textured PBR model (multiview-to-model)
- *   out/chars/<char>/model/preview.webp         Tripo's rendered preview
- *   out/chars/<char>/model/rigged.glb           animations/rig (--rig)
- *   out/chars/<char>/model/anim/<motion>.glb    animations/retarget per MOTIONS entry (--animate)
- *   out/chars/<char>/model/model.fbx            models/convert FBX, blender preset (--fbx)
- *   out/chars/<char>/model/tasks.json           every task id, so steps resume instead of re-paying
+ *   out/chars/<char>/model/model.glb     textured PBR model (multiview-to-model)
+ *   out/chars/<char>/model/preview.webp  Tripo's rendered preview
+ *   out/chars/<char>/model/tasks.json    the task id, so a re-run does not re-pay
  *
- * `--draft` skips texture (20 credits instead of 40) to check geometry first.
  * `--faces n` costs nothing; `--low-poly` (+10) buys game-ready edge flow.
- * `--single` uses image-to-model on views/front.png only (cheaper, less faithful).
- * `--from-multiview <task_id>` uses a Tripo image-to-multiview sheet instead of
- * views/, to test how much of a supplied back view the reconstruction honours.
- * `--task <task_id>` adopts an existing model task (rig / animate / fbx only).
- * Do mesh edits (decimate / segment) BEFORE rigging: they discard the rig.
- * Credit costs: docs/research/tripo-ai.md §2.
+ * `--draft` skips texture (20 credits instead of 40) to check geometry first.
+ * Anything else Tripo accepts goes in `tripo:` in chars/<char>.yaml.
+ * Credit costs: docs/research/tripo-ai.md section 2.
  */
 
 import { join } from "node:path";
 import { loadChar } from "../lib/chars";
-import { die, ensureDir, flag, has, num, pick, positional } from "../lib/cli";
+import { die, ensureDir, flag, has, num, positional } from "../lib/cli";
 import { modelDir, viewsDir } from "../lib/paths";
 import { download, modelUrl, runTask, tripoClient, uploadFile } from "../lib/tripo";
-import { MOTIONS } from "../motions";
 
-const VALUE_FLAGS = new Set([
-  "--version",
-  "--faces",
-  "--only",
-  "--task",
-  "--seed",
-  "--from-multiview",
-]);
+const VALUE_FLAGS = new Set(["--version", "--faces", "--seed"]);
 
 interface Tasks {
   model?: string;
-  rig?: string;
-  anim?: Record<string, string>;
-  fbx?: string;
 }
 
 export async function run(argv: string[]): Promise<void> {
   const name = positional(argv, VALUE_FLAGS);
   if (!name)
     die(
-      "usage: bun run c3d model <char> [--single] [--version v3.1-20260211] [--faces n] [--quad] " +
-        "[--low-poly] [--draft] [--autofix] [--from-multiview task_id] " +
-        "[--rig] [--animate] [--only walk,run] [--fbx] [--task task_id] [--balance]",
+      "usage: bun run c3d model <char> [--version v3.1-20260211] [--faces n] " +
+        "[--low-poly] [--draft] [--seed n]",
     );
   const client = tripoClient();
-  if (has(argv, "balance")) {
-    const b = await client.getBalance();
-    console.log(`[tripo] balance ${b.balance} credits (frozen ${b.frozen ?? 0})`);
-  }
 
   const char = await loadChar(name);
   const dir = modelDir(char.name);
@@ -76,13 +53,8 @@ export async function run(argv: string[]): Promise<void> {
     // Bake what the views show instead of re-deriving the texture from geometry.
     texture_alignment: "original_image" as const,
     ...(flag(argv, "faces") ? { face_limit: num(argv, "faces", 0) } : {}),
-    ...(has(argv, "quad") ? { quad: true } : {}),
     // Direct low-poly with usable edge flow (+10 credits, face_limit 500-20000).
-    // Do it here, not as a post-process: mesh edits discard the rig.
     ...(has(argv, "low-poly") ? { smart_low_poly: true } : {}),
-    // Tripo pre-processes the input images. Off by default: it is another
-    // black box on top of views that are already matted and squared.
-    ...(has(argv, "autofix") ? { enable_image_autofix: true } : {}),
     // Geometry only, 20 credits instead of 40 — for checking shape before
     // paying for texture. `orientation: align_image` needs texture, so a draft
     // comes out in Tripo's own frame.
@@ -91,59 +63,24 @@ export async function run(argv: string[]): Promise<void> {
     ...char.tripo,
   };
 
-  // --- 1. geometry --------------------------------------------------------
-  const explicit = flag(argv, "task");
-  if (explicit) tasks.model = explicit;
+  // --- geometry -----------------------------------------------------------
   if (!tasks.model) {
-    // A Tripo image-to-multiview sheet, by task id: skip views/ and hand Tripo
-    // back four images it made itself. `original_task_id` is in the SDK types
-    // but the server rejects it (1004 "files or inputs are required"), so pass
-    // the sheet's own image URLs through the normal `files` slot.
-    const sheet = flag(argv, "from-multiview");
-    const task = sheet
-      ? await (async () => {
-          const out = ((await client.getTask(sheet)).output ?? {}) as Record<string, unknown>;
-          // The urls sit under output.generate_multiview_image, not at the top.
-          const mv = (out.generate_multiview_image ?? out) as Record<string, string>;
-          const files = [mv.front_view_url, mv.left_view_url, mv.back_view_url, mv.right_view_url];
-          if (!files[0]) die(`task ${sheet} is not a multiview sheet: ${JSON.stringify(out)}`);
-          return runTask(
-            client,
-            client.multiviewToModel,
-            { files, ...geometry },
-            "multiview-to-model (sheet)",
-          );
-        })()
-      : await (async () => {
-          const views = viewsDir(char.name);
-          const view = async (v: string) => {
-            const p = join(views, `${v}.png`);
-            return (await Bun.file(p).exists()) ? uploadFile(client, p) : undefined;
-          };
-          const front = await view("front");
-          if (!front) die(`no ${join(views, "front.png")} — run \`c3d views ${name}\` first`);
-          if (has(argv, "single"))
-            return runTask(
-              client,
-              client.imageToModel,
-              { file: front, ...geometry },
-              "image-to-model",
-            );
-          const [left, back, right] = await Promise.all([
-            view("left"),
-            view("back"),
-            view("right"),
-          ]);
-          const missing = [left, back, right].filter((v) => !v).length;
-          if (missing)
-            console.warn(`[model] ${missing} side view(s) missing; Tripo will infer them`);
-          return runTask(
-            client,
-            client.multiviewToModel,
-            { files: [front, left, back, right], ...geometry },
-            "multiview-to-model",
-          );
-        })();
+    const views = viewsDir(char.name);
+    const view = async (v: string) => {
+      const p = join(views, `${v}.png`);
+      return (await Bun.file(p).exists()) ? uploadFile(client, p) : undefined;
+    };
+    const front = await view("front");
+    if (!front) die(`no ${join(views, "front.png")} — run \`c3d views ${name}\` first`);
+    const [left, back, right] = await Promise.all([view("left"), view("back"), view("right")]);
+    const missing = [left, back, right].filter((v) => !v).length;
+    if (missing) console.warn(`[model] ${missing} side view(s) missing; Tripo will infer them`);
+    const task = await runTask(
+      client,
+      client.multiviewToModel,
+      { files: [front, left, back, right], ...geometry },
+      "multiview-to-model",
+    );
     tasks.model = task.task_id;
     await save();
     await download(modelUrl(task), join(dir, "model.glb"));
@@ -152,85 +89,5 @@ export async function run(argv: string[]): Promise<void> {
     console.log(`[model] -> ${join(dir, "model.glb")}`);
   } else {
     console.log(`[model] reusing model task ${tasks.model}`);
-  }
-
-  // --- 2. rig -------------------------------------------------------------
-  if ((has(argv, "rig") || has(argv, "animate")) && !tasks.rig) {
-    const check = await runTask(client, client.rigCheck, { input: tasks.model }, "rig-check");
-    if (check.output?.riggable === false)
-      throw new Error(`Tripo says this model is not riggable: ${JSON.stringify(check.output)}`);
-    const rig = await runTask(
-      client,
-      client.rigModel,
-      {
-        input: tasks.model,
-        model: "v2.5-20260210",
-        rig_type: check.output?.rig_type ?? "biped",
-        // Mixamo bone names, so Mixamo / UE / Rigify retargeting in Blender maps 1:1.
-        spec: "mixamo",
-        out_format: "glb",
-      },
-      "rig",
-    );
-    tasks.rig = rig.task_id;
-    await save();
-    await download(modelUrl(rig), join(dir, "rigged.glb"));
-    console.log(`[model] rigged -> ${join(dir, "rigged.glb")}`);
-  }
-
-  // --- 3. animations -------------------------------------------------------
-  if (has(argv, "animate")) {
-    const animDir = join(dir, "anim");
-    await ensureDir(animDir);
-    tasks.anim ??= {};
-    for (const m of pick(argv, "only", MOTIONS)) {
-      if (!m.tripo) {
-        console.log(`[model] ${m.id}: no Tripo preset, skipped`);
-        continue;
-      }
-      const dest = join(animDir, `${m.id}.glb`);
-      if (tasks.anim[m.id] && (await Bun.file(dest).exists())) {
-        console.log(`[model] ${m.id}: already have ${dest}`);
-        continue;
-      }
-      const t = await runTask(
-        client,
-        client.retargetAnimation,
-        {
-          input: tasks.rig!,
-          animation: m.tripo,
-          out_format: "glb",
-          bake_animation: true,
-          export_with_geometry: true,
-          // Cycle on the spot: the sprite renderer keeps the camera on the character anyway.
-          animate_in_place: true,
-        },
-        `retarget ${m.id}`,
-      );
-      tasks.anim[m.id] = t.task_id;
-      await save();
-      await download(modelUrl(t), dest);
-      console.log(`[model] ${m.id} -> ${dest}`);
-    }
-  }
-
-  // --- 4. FBX for Blender hand-work ----------------------------------------
-  if (has(argv, "fbx") && !tasks.fbx) {
-    const t = await runTask(
-      client,
-      client.convertModel,
-      {
-        input: tasks.rig ?? tasks.model!,
-        format: "FBX",
-        fbx_preset: "blender",
-        with_animation: Boolean(tasks.rig),
-        pivot_to_center_bottom: true,
-      },
-      "convert FBX",
-    );
-    tasks.fbx = t.task_id;
-    await save();
-    await download(modelUrl(t), join(dir, "model.fbx"));
-    console.log(`[model] fbx -> ${join(dir, "model.fbx")}`);
   }
 }

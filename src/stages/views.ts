@@ -30,7 +30,7 @@ import sharp from "sharp";
 import { loadChar } from "../lib/chars";
 import { die, ensureDir, flag, has, list, num, positional, resolveSeed } from "../lib/cli";
 import { connect, matchLora, runWorkflow, uploadImage, type Lora } from "../lib/comfy";
-import { conceptDir, genPrefix, viewsDir } from "../lib/paths";
+import { genPrefix, viewsDir } from "../lib/paths";
 import { buildQwenEdit, type Matte } from "../lib/qwen-edit";
 
 /** Appended to every plain-instruction prompt so identity stays locked across rotations. */

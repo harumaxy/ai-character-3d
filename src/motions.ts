@@ -1,12 +1,10 @@
 /**
- * Motion catalogue. Every motion ends up as out/chars/<char>/model/anim/<id>.glb
- * carrying mesh + armature + one clip, which is all the render stage reads.
+ * Motion catalogue. `c3d retarget` bakes each entry onto the character's
+ * Auto-Rig Pro rig as an action of the same id, and `c3d render` renders that
+ * action from eight directions.
  *
- * Two routes produce that file:
- *   `c3d retarget` — the normal one. `fbx`/`action` name a clip in motions/,
- *      retargeted onto the character's Auto-Rig Pro rig with `preset`.
- *   `c3d model --animate` — Tripo's own preset animations, named by `tripo`.
- *      Kept for the Tripo-rig route; see docs/research/tripo-ai.md.
+ * The clips live under motions/ and are gitignored; the READMEs there say where
+ * to download them.
  */
 
 export const DIRS8 = [
@@ -22,19 +20,18 @@ export const DIRS8 = [
 export type Dir8 = (typeof DIRS8)[number];
 
 export interface Motion {
+  /** Also the name of the baked action in anim.blend, and the sprite folder. */
   id: string;
-  /** Tripo animation preset (`preset:<name>`), if this motion comes from Tripo. */
-  tripo?: string;
-  /** Source FBX under motions/, repo-relative. Read by `c3d retarget`. */
-  fbx?: string;
-  /** Action inside `fbx`. Omit for one-clip files (Mixamo); required for the UAL packs. */
+  /** Source FBX under motions/, repo-relative. */
+  fbx: string;
+  /** Action inside `fbx`. Omit for one-clip files (Mixamo); the UAL packs need it. */
   action?: string;
   /**
    * Auto-Rig Pro bone map: a built-in preset name (ARP's remap_presets/) or a
    * path to a .bmap. FK maps, not IK — sprite frames never see a pole vector,
    * and IK poles are what goes wrong first on a rig ARP did not generate itself.
    */
-  preset?: string;
+  preset: string;
   /** Frames to sample from the clip. */
   frames: number;
   /** true: the last sample stops just before the clip wraps (cycles). false: include the clip's end. */
@@ -43,48 +40,33 @@ export interface Motion {
   fps: number;
 }
 
-const MIXAMO = { preset: "mixamo_fk" } as const;
-// Quaternius/UAL is UE Mannequin naming, so ARP's Unreal map is the starting
-// point. Case differences (UAL "Head" vs the preset's "head") show up as
-// unmapped bones in `c3d retarget --dry-run`; fix them once in ARP's Remap
-// panel, export to motions/quaternius/ual.bmap, and point `preset` at that.
-const UAL = { fbx: "motions/quaternius/UAL1_Standard.fbx", preset: "unreal_mannequin_remap" };
+const MIXAMO = "mixamo_fk";
+// Quaternius/UAL is UE Mannequin naming, so ARP's built-in Unreal map is the
+// starting point — but ARP spells the head bone "head" and UAL spells it
+// "Head", and the mismatch silently drops the head from the bone list.
+// motions/quaternius/ual.bmap is that preset with the one name corrected.
+const UAL1 = "motions/quaternius/UAL1_Standard.fbx";
+const UAL_MAP = "motions/quaternius/ual.bmap";
 
 export const MOTIONS: Motion[] = [
-  {
-    id: "idle",
-    tripo: "preset:idle",
-    fbx: "motions/mixamo/idle.fbx",
-    ...MIXAMO,
-    frames: 4,
-    loop: true,
-    fps: 4,
-  },
-  {
-    id: "walk",
-    tripo: "preset:walk",
-    fbx: "motions/mixamo/walking.fbx",
-    ...MIXAMO,
-    frames: 8,
-    loop: true,
-    fps: 8,
-  },
-  {
-    id: "run",
-    tripo: "preset:run",
-    fbx: "motions/mixamo/running.fbx",
-    ...MIXAMO,
-    frames: 8,
-    loop: true,
-    fps: 10,
-  },
+  { id: "idle", fbx: "motions/mixamo/idle.fbx", preset: MIXAMO, frames: 4, loop: true, fps: 4 },
+  { id: "walk", fbx: "motions/mixamo/walking.fbx", preset: MIXAMO, frames: 8, loop: true, fps: 8 },
+  { id: "run", fbx: "motions/mixamo/running.fbx", preset: MIXAMO, frames: 8, loop: true, fps: 10 },
   {
     id: "sneak",
     fbx: "motions/mixamo/crouched sneaking right.fbx",
-    ...MIXAMO,
+    preset: MIXAMO,
     frames: 8,
     loop: true,
     fps: 8,
   },
-  { id: "jump", ...UAL, action: "Jump_Start", frames: 4, loop: false, fps: 10 },
+  {
+    id: "jump",
+    fbx: UAL1,
+    action: "Jump_Start",
+    preset: UAL_MAP,
+    frames: 4,
+    loop: false,
+    fps: 10,
+  },
 ];

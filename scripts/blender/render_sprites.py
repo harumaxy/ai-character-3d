@@ -1,14 +1,19 @@
 """
-Render 8-direction sprite frames from animated character files. Runs inside Blender:
+Render 8-direction sprite frames from a rigged character. Runs inside Blender,
+against the .blend `c3d retarget` baked every clip into:
 
-  blender --background --python scripts/blender/render_sprites.py -- \
+  blender --background out/chars/<c>/anim.blend \
+      --python scripts/blender/render_sprites.py -- \
       --motions out/chars/<c>/render/motions.json --out out/chars/<c>/render \
       [--size 512] [--elev 30] [--height 1.7] [--margin 1.15] \
       [--engine eevee|workbench] [--light camera|world] [--passes color,normal] \
       [--aa on|off] [--track xy|none] [--dirs 8|5]
 
-motions.json: [{"id": "walk", "file": "<abs path .glb|.fbx>", "frames": 8, "loop": true}, ...]
-Each file carries mesh + armature + one clip (Tripo animate_retarget / Mixamo).
+motions.json: [{"id": "walk", "action": "walk", "frames": 8, "loop": true}, ...]
+`action` names an action in the open .blend; the rig and its skinned meshes are
+found in the file. Everything else in the scene (Auto-Rig Pro's controller
+shapes, helpers) is hidden from the render.
+
 Writes <out>/<id>/<dir>/<k>.png (RGBA, transparent) and <k>.normal.png, plus
 <out>/meta.json. Blender exits 0 even on an uncaught exception, so main() is
 wrapped and exits 1 on failure.
@@ -77,31 +82,26 @@ def parse_args():
     return opts
 
 
-def clear_scene():
-    for o in list(bpy.data.objects):
-        bpy.data.objects.remove(o, do_unlink=True)
-    for coll in (bpy.data.meshes, bpy.data.armatures, bpy.data.actions, bpy.data.materials,
-                 bpy.data.images):
-        for d in list(coll):
-            if d.users == 0:
-                coll.remove(d)
+def find_character():
+    """The rig and the meshes it deforms, out of whatever else the .blend holds.
 
-
-def import_model(path):
-    before = set(bpy.data.objects)
-    ext = os.path.splitext(path)[1].lower()
-    if ext in (".glb", ".gltf"):
-        bpy.ops.import_scene.gltf(filepath=path)
-    elif ext == ".fbx":
-        bpy.ops.import_scene.fbx(filepath=path)
-    else:
-        raise SystemExit(f"unsupported model format: {path}")
-    new = [o for o in bpy.data.objects if o not in before]
-    rig = next((o for o in new if o.type == "ARMATURE"), None)
-    meshes = [o for o in new if o.type == "MESH"]
+    An Auto-Rig Pro file also carries a few dozen controller-shape meshes
+    (cs_*, and the ones ARP builds per rig). They are real mesh objects, so they
+    would otherwise render and swell the bounding box the camera frames on.
+    Only the meshes with an Armature modifier pointing at the rig are the
+    character; everything else gets hidden from the render.
+    """
+    rigs = [o for o in bpy.data.objects if o.type == "ARMATURE"]
+    if not rigs:
+        raise SystemExit("no armature in this .blend — run `c3d retarget` first")
+    rig = rigs[0]
+    meshes = [o for o in bpy.data.objects if o.type == "MESH" and o.find_armature() == rig]
     if not meshes:
-        raise SystemExit(f"no mesh in {path}")
-    return rig, meshes, new
+        raise SystemExit(f"no mesh skinned to {rig.name}")
+    keep = set(meshes)
+    for o in bpy.data.objects:
+        o.hide_render = o not in keep
+    return rig, meshes
 
 
 def set_engine(scene, engine):
@@ -258,9 +258,11 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     with open(opts["motions"], encoding="utf-8") as f:
         motions = json.load(f)
-    missing = [m["file"] for m in motions if not os.path.exists(m["file"])]
+    missing = [m["action"] for m in motions if m["action"] not in bpy.data.actions]
     if missing:
-        sys.stderr.write("missing model files:\n  " + "\n  ".join(missing) + "\n")
+        sys.stderr.write(f"actions not in {bpy.data.filepath or 'this .blend'}:\n  "
+                         + "\n  ".join(missing) + "\nhave: "
+                         + ", ".join(sorted(a.name for a in bpy.data.actions)) + "\n")
         sys.exit(1)
 
     passes = [p for p in opts["passes"].split(",") if p]
@@ -270,7 +272,7 @@ def main():
     size = int(opts["size"])
 
     scene = bpy.context.scene
-    clear_scene()
+    rig, meshes = find_character()
     setup_scene(scene, opts)
     cam = setup_camera(scene)
     setup_light(scene, cam, opts["light"])
@@ -278,24 +280,21 @@ def main():
     normal_mat = normal_material() if "normal" in passes else None
     log(f"blender {bpy.app.version_string}, engine {scene.render.engine}, {len(motions)} motions, "
         f"elev {elev}, size {size}, passes {passes}")
+    log(f"rig {rig.name}, {len(meshes)} skinned mesh(es): "
+        + ", ".join(f"{o.name} ({len(o.data.vertices)} verts)" for o in meshes))
 
     meta = {"size": size, "elev": elev, "dirs": dirs, "facing": opts["facing"], "motions": []}
     written = 0
     for m in motions:
-        rig, meshes, objs = import_model(m["file"])
-        anim_obj = rig or meshes[0]
-        action = anim_obj.animation_data.action if anim_obj.animation_data else None
-        if action is None:
-            # Some importers hang the action on a mesh or leave it in bpy.data only.
-            action = next(iter(bpy.data.actions), None)
-            if action is not None and rig is not None:
-                rig.animation_data_create()
-                rig.animation_data.action = action
-        if action is None:
-            log(f"{m['id']}: no animation in {m['file']} — rendering the rest pose once")
-            start, end = 1.0, 1.0
-        else:
-            start, end = action.frame_range
+        action = bpy.data.actions[m["action"]]
+        if rig.animation_data is None:
+            rig.animation_data_create()
+        rig.animation_data.action = action
+        # Blender 4.4+ actions carry slots; assigning the action alone can leave
+        # the rig bound to nothing, which renders the rest pose for every frame.
+        if hasattr(rig.animation_data, "action_slot") and len(action.slots):
+            rig.animation_data.action_slot = action.slots[0]
+        start, end = action.frame_range
         times = frame_times(start, end, int(m["frames"]), bool(m["loop"]))
         log(f"{m['id']}: frames {start:.0f}..{end:.0f} -> {[round(t, 1) for t in times]}")
 
@@ -339,10 +338,6 @@ def main():
                     scene.view_settings.view_transform = "Standard"
                 written += 1
         meta["motions"].append({"id": m["id"], "frames": len(times), "height": height})
-        for o in objs:
-            bpy.data.objects.remove(o, do_unlink=True)
-        for a in list(bpy.data.actions):
-            bpy.data.actions.remove(a)
 
     with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)

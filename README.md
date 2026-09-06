@@ -49,10 +49,10 @@ bun run c3d concept example                     # 候補 4 枚 → out/chars/exa
 bun run c3d concept example --model anima       # アニメ調（タグプロンプト）
 bun run c3d views   example                     # 最新の候補から back/left/right → out/chars/example/views/
 bun run c3d views   example --hero out/chars/example/concept/example_00002_.png --seed 1
-bun run c3d model   example --faces 20000 --low-poly   # Tripo: multiview → model.glb（50 credits）
+bun run c3d model   example --faces 20000 --low-poly   # Tripo: 4 面 → model.glb（50 credits）
 #                                                 ここで Blender + Auto-Rig Pro の手作業（下の節）
 bun run c3d retarget example --dry-run          # ボーン対応だけ作って、外れたボーンを報告
-bun run c3d retarget example [--only walk]      # motions/ のクリップを焼いて model/anim/<id>.glb
+bun run c3d retarget example [--only walk]      # motions/ のクリップを anim.blend にベイク
 bun run c3d render  example [--only walk] [--elev 30] [--size 512] [--dirs 8|5] [--light camera|world]
 bun run c3d sheet   example --size 128          # out/chars/example/sheet/example.png + .json
 bun run c3d sheet   example --pass normal       # 法線マップ版シート（2D エンジンの動的ライティング用）
@@ -80,7 +80,7 @@ out/chars/<name>/
   views/{front,back,left,right}.png   1024² 白背景、Tripo 入力
   model/model.glb            Tripo 生成物（preview.webp, tasks.json）
   rig.blend                  ARP でリグ・スキニング済み（手作業、retarget の入力）
-  model/anim/<motion>.glb    リターゲット済みモデル（render の入力）
+  anim.blend                 rig.blend + モーションごとのベイク済みアクション（render の入力）
   render/<motion>/<dir>/<k>.png, <k>.normal.png, meta.json
   sheet/<name>.png, <name>.json
 ```
@@ -97,13 +97,29 @@ Tripo が出すのはメッシュだけ。ここから先はローカルで完�
 ### 手作業（キャラ 1 体につき 1 回）
 
 1. `out/chars/<name>/model/model.glb` を Blender に import（GLB のままでいい。FBX 変換は不要）
-2. **Z 軸で回して -Y 正面にし、`Object > Apply > Rotation`。** Tripo の出力は +X 正面。ここで直して
-   おかないと後段が全部デフォルト設定から外れる
+2. **向き・スケール・接地を直す**（`scripts/blender/orient_model.py`。1 のかわりに直接 `.blend` を作れる）
+
+   ```bash
+   blender --background --python scripts/blender/orient_model.py -- \
+       --model out/chars/<name>/model/model.glb --height 1.7 \
+       --blend out/chars/<name>/rig.blend
+   ```
+
+   Tripo の出力は +X 正面・身長 1.0 単位に正規化されている。リターゲットは world 空間の回転を
+   コピーするので、Mixamo（-Y 正面・実寸）とレストポーズを揃えておかないと 90° ずれた状態で焼ける。
+   `c3d render` のカメラ枠も yaml の `height` を実寸として使う。詳細は
+   [`blender-arp-retarget.md`](docs/research/blender-arp-retarget.md) §2
 3. ARP `Smart` → マーカー配置 → `Match to Rig`。フードやヘルメットのあるキャラは顎・首の自動検出が
    外れやすいので目視で直す
-4. メッシュ → リグの順に選択して `Bind`。ARP の Voxelize で足りなければ Voxel Heat Diffuse Skinning。
-   腕を上げて脇のウェイトが胴に滲んでいないか確認する
-5. `out/chars/<name>/rig.blend` として保存
+4. メッシュ → リグの順に選択して `Bind`。**A ポーズは手が腰から数ミリしか離れておらず、既定の
+   Voxelized（voxel 13 mm）だと腰のポーチが手のボーンに引っ張られる。** エンジンと解像度の
+   選び方は [`blender-arp-retarget.md`](docs/research/blender-arp-retarget.md) §8
+5. `out/chars/<name>/rig.blend` として保存。**Bind が通ったら真っ先に保存する**
+6. 検証:
+   ```bash
+   blender --background out/chars/<name>/rig.blend --python scripts/blender/check_bind.py
+   ```
+   腕↔胴の最小隙間と、腕ウェイトが漏れた非腕頂点の割合を出す。エンジンを変えて比べるときの物差し
 
 MCP 経由でエージェントに触らせる場合は Blender GUI を起動してアドオンの Connect を押してから。
 `execute_blender_code` から `bpy.ops.arp.*` を呼べるが、ダイアログを開く operator には
@@ -113,7 +129,7 @@ MCP 経由でエージェントに触らせる場合は Blender GUI を起動し
 
 ```bash
 bun run c3d retarget <name> --dry-run   # 先にこれ。対応の取れていないボーンを報告する
-bun run c3d retarget <name>             # ベイクして model/anim/<id>.glb を書く
+bun run c3d retarget <name>             # 全クリップを anim.blend に 1 アクションずつベイク
 ```
 
 対象は `src/motions.ts` の `MOTIONS` のうち `fbx` / `preset` を持つエントリ。Mixamo は ARP 同梱の
@@ -122,8 +138,14 @@ bun run c3d retarget <name>             # ベイクして model/anim/<id>.glb �
 大文字小文字は区別される。ズレた分は ARP の Remap パネルで直して `.bmap` に書き出し、
 `MOTIONS` の `preset` をそのパスに向ける。
 
-リターゲットを自前でやるなら `model/anim/<motion>.glb` を差し替えるだけでいい。`c3d render` は
-「メッシュ + アーマチュア + 1 クリップ」のファイルなら中身の出所を問わない。
+出力は `out/chars/<name>/anim.blend` 1 個で、`c3d render` はそれを開いてアクションを切り替える。
+中間の GLB は書かない。1 モーション 1 ファイルにすると同じメッシュとテクスチャが本数分複製される上、
+書き出し→読み直しの往復で glTF importer がボーン表示用の不可視オブジェクトを持ち込み、
+カメラのフレーミングを壊す。
+
+**リグ付きモデルをゲームエンジンに持っていくのは別作業。** Auto-Rig Pro の Export
+（`Auto-Rig Pro: Export` タブ）を使う。Godot 4 なら glTF が素直で、ARP 側で
+Rename for UE / Unity をかけずにそのまま出す。このリポのステージはスプライト生成しか見ていない。
 
 ## 開発
 
@@ -149,7 +171,9 @@ src/
   stages/            concept / views / model / retarget / render / sheet
   types/nodes.ts     codegen 生成物
 scripts/blender/
+  orient_model.py    Tripo の GLB を -Y 正面・実寸・接地に直して .blend にする
   retarget.py        ARP Remap を叩いて 1 モーション 1 GLB に焼く
+  check_bind.py      スキニングの検証（腕↔胴の隙間とウェイト漏れを数える）
   render_sprites.py  8 方向レンダ（EEVEE、color + camera-space normal）
 chars/               キャラ定義
 motions/             Mixamo / Quaternius の FBX（gitignore、README のみ追跡）

@@ -21,10 +21,17 @@ import { matte, type Matte } from "../lib/qwen-edit";
  * Framing for an image-to-3D reference. Prose, because FLUX.2 / Qwen read
  * prose; Anima gets the tag version below. "A-pose" beats "T-pose" for auto
  * rigging (Tripo, AccuRig) and keeps the arms clear of the torso silhouette.
+ *
+ * The arm angle is spelled out because "arms slightly away from the body" gave
+ * 24.5 degrees off vertical, which is close enough to hanging that the hands
+ * end up ~3mm from the hips. A voxel skinner then welds the belt pouches to the
+ * hand bones, and every clip animates far from the bind pose. 45 degrees leaves
+ * centimetres of clearance and sits mid-range for Mixamo's clips.
+ * See docs/research/blender-arp-retarget.md section 8.
  */
-const FRAMING_PROSE = `Full body character reference sheet, front view, standing in a relaxed A-pose with arms held slightly away from the body and palms facing inward, feet shoulder-width apart, looking straight ahead with a neutral expression. Entire body visible from the top of the head to the soles of the feet, centered, nothing cropped. Orthographic-looking straight-on camera at chest height, no perspective distortion. Flat even studio lighting, no cast shadows, no rim light, plain pure white background, no props, no text.`;
+const FRAMING_PROSE = `Full body character reference sheet, front view, standing in an open A-pose with both arms held out and away from the torso at roughly 45 degrees below the shoulders, a clear wide gap of empty background visible between each arm and the side of the body, elbows straight, palms facing inward, fingers spread apart and not touching, feet shoulder-width apart, looking straight ahead with a neutral expression. Entire body visible from the top of the head to the soles of the feet, centered, nothing cropped. Orthographic-looking straight-on camera at chest height, no perspective distortion. Flat even studio lighting, no cast shadows, no rim light, plain pure white background, no props, no text.`;
 
-const FRAMING_TAGS = `character reference, full body, standing, straight-on, front view, a-pose, arms slightly away from body, looking at viewer, expressionless, white background, simple background, no shadow, flat lighting, head to toe visible, solo`;
+const FRAMING_TAGS = `character reference, full body, standing, straight-on, front view, a-pose, arms out 45 degrees, arms away from body, spread arms, gap between arms and body, spread fingers, looking at viewer, expressionless, white background, simple background, no shadow, flat lighting, head to toe visible, solo`;
 
 const NEGATIVE_TAGS = `worst quality, low quality, bad anatomy, bad hands, missing fingers, extra digits, text, watermark, signature, multiple views, multiple girls, multiple boys, cropped, out of frame, blurry, scenery, floor, ground, grey background, gradient background, drop shadow, dynamic pose, holding weapon`;
 

@@ -19,5 +19,9 @@ export const charDir = (name: string) => join(OUT_DIR, "chars", name);
 export const conceptDir = (name: string) => join(charDir(name), "concept");
 export const viewsDir = (name: string) => join(charDir(name), "views");
 export const modelDir = (name: string) => join(charDir(name), "model");
+/** Hand-made: the Tripo mesh rigged and skinned with Auto-Rig Pro. */
+export const rigBlend = (name: string) => join(charDir(name), "rig.blend");
+/** rig.blend plus one baked action per motion. `c3d retarget` writes it, `render` reads it. */
+export const animBlend = (name: string) => join(charDir(name), "anim.blend");
 export const renderDir = (name: string) => join(charDir(name), "render");
 export const sheetDir = (name: string) => join(charDir(name), "sheet");

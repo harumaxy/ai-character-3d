@@ -1,12 +1,18 @@
 """
 Retarget Mixamo / Quaternius clips onto an Auto-Rig Pro rig with ARP's Remap
-module, and write one GLB per motion where the render stage already looks for
-them. Runs inside Blender against a .blend holding the rigged, skinned character:
+module, baking every clip into one .blend as a named action. Runs inside Blender
+against a .blend holding the rigged, skinned character:
 
   blender --background out/chars/<c>/rig.blend \
       --python scripts/blender/retarget.py -- \
-      --clips out/chars/<c>/clips.json --out out/chars/<c>/model/anim \
+      --clips out/chars/<c>/clips.json --out out/chars/<c>/anim.blend \
       [--target <armature object>] [--dry-run]
+
+The render stage opens that .blend and switches actions. Nothing is exported:
+a GLB per motion meant five copies of the same 27k-triangle mesh, and the
+export/import round trip is what drags the glTF importer's hidden bone-display
+icosphere into the camera framing. Taking a rigged character to a game engine is
+a separate job — use Auto-Rig Pro's own exporter for that, not this script.
 
 clips.json: [{"id": "walk", "fbx": "motions/mixamo/walking.fbx",
               "preset": "mixamo_fk"},
@@ -98,14 +104,15 @@ def find_target(name):
 
 
 def import_source(path):
-    """Import an FBX, returning (armature, every object it brought in)."""
-    before = set(bpy.data.objects)
+    """Import an FBX, returning (armature, its objects, its actions)."""
+    objs, acts = set(bpy.data.objects), set(bpy.data.actions)
     bpy.ops.import_scene.fbx(filepath=os.path.abspath(path))
-    new = [o for o in bpy.data.objects if o not in before]
+    new = [o for o in bpy.data.objects if o not in objs]
+    new_acts = [a for a in bpy.data.actions if a not in acts]
     rig = next((o for o in new if o.type == "ARMATURE"), None)
     if rig is None:
         raise SystemExit(f"no armature in {path}")
-    return rig, new
+    return rig, new, new_acts
 
 
 def assign_action(rig, action):
@@ -118,18 +125,22 @@ def assign_action(rig, action):
             rig.animation_data.action_slot = action.slots[0]
 
 
-def source_actions(rig, new_objects, wanted):
+def source_actions(rig, new_actions, wanted):
     """Actions to retarget from this FBX: the named one, or whatever it carries."""
     if wanted:
-        act = bpy.data.actions.get(wanted)
-        if act is None:
-            names = sorted(a.name for a in bpy.data.actions)
-            raise SystemExit(f"action {wanted!r} not in the file. Available: {names}")
-        return [act]
-    for o in new_objects:
-        if o.animation_data and o.animation_data.action:
-            return [o.animation_data.action]
-    raise SystemExit(f"{rig.name} came in without an action; name one with \"action\"")
+        # The FBX importer prefixes the take: Quaternius' "Jump_Start" arrives as
+        # "Armature|Armature|Jump_Start". Match the bare name too.
+        for a in new_actions:
+            if a.name == wanted or a.name.split("|")[-1] == wanted:
+                return [a]
+        names = sorted(a.name.split("|")[-1] for a in new_actions)
+        raise SystemExit(f"action {wanted!r} not in this file. Available: {names}")
+    if rig.animation_data and rig.animation_data.action:
+        return [rig.animation_data.action]
+    if len(new_actions) == 1:
+        return list(new_actions)
+    raise SystemExit(f"{rig.name} came in with {len(new_actions)} actions and none active; "
+                     'name one with "action"')
 
 
 def unmatched(scene):
@@ -148,38 +159,40 @@ def map_bones(scene, source_rig, target_rig, action, preset):
     bpy.ops.arp.build_bones_list()
     # EXEC_DEFAULT: the operator's invoke() opens a confirmation dialog, which in
     # --background never gets answered.
-    bpy.ops.arp.import_config("EXEC_DEFAULT", filepath=preset, clear_current=True)
+    try:
+        bpy.ops.arp.import_config("EXEC_DEFAULT", filepath=preset, clear_current=True)
+    except RuntimeError as e:
+        # ARP reports "some preset bones do not exist in the armature" at ERROR
+        # level even though the import succeeded, and bpy.ops turns any ERROR
+        # report into an exception. A preset built for a full facial rig always
+        # trips it (LeftEye/RightEye) on a rig built without facial bones. The
+        # bones that actually matter are reported by unmatched() below.
+        if "do not exist in the armature" not in str(e):
+            raise
+        # Every name here is a preset row that never made it into the bone list,
+        # so the joint simply does not animate. Case matters: the Unreal preset
+        # says "head" and Quaternius' UAL rig says "Head", and that one silently
+        # costs you the head. Print them all — this is the reason to --dry-run.
+        missing = [ln.replace("Error:", "").strip() for ln in str(e).splitlines()[1:]]
+        missing = [m for m in missing if m]
+        log(f"  preset rows dropped ({len(missing)}): {', '.join(missing)}")
     return unmatched(scene)
 
 
-def export_clip(target_rig, action, path):
-    """Write target_rig + its meshes with `action` active as a one-clip GLB."""
-    assign_action(target_rig, action)
-    start, end = action.frame_range
-    scene = bpy.context.scene
-    scene.frame_start, scene.frame_end = int(start), int(end)
-    bpy.ops.object.select_all(action="DESELECT")
-    target_rig.select_set(True)
-    for o in bpy.data.objects:
-        if o.type == "MESH" and o.find_armature() == target_rig:
-            o.select_set(True)
-    bpy.context.view_layer.objects.active = target_rig
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    bpy.ops.export_scene.gltf(
-        filepath=path,
-        export_format="GLB",
-        use_selection=True,
-        export_animations=True,
-        # ACTIVE_ACTIONS, not ACTIONS: every earlier clip is still in the .blend
-        # and ACTIONS would pack all of them into every file.
-        export_animation_mode="ACTIVE_ACTIONS",
-    )
+def remove(objects, actions):
+    """Drop an imported source: its objects and its takes.
 
-
-def remove(objects):
+    The FBX importer marks every take with a fake user, so they survive both the
+    source armature's deletion and the save. Left alone, one Quaternius file
+    parks 45 unused actions in the .blend next to the five that mean something.
+    """
     for o in objects:
         if o.name in bpy.data.objects:
             bpy.data.objects.remove(o, do_unlink=True)
+    for a in actions:
+        if a.name in bpy.data.actions:
+            a.use_fake_user = False
+            bpy.data.actions.remove(a)
 
 
 def main():
@@ -199,16 +212,16 @@ def main():
     for c in clips:
         by_fbx.setdefault(c["fbx"], []).append(c)
 
-    failures = []
+    failures, baked_names = [], []
     for fbx, group in by_fbx.items():
         log(f"{fbx}: {len(group)} clip(s)")
-        source, imported = import_source(fbx)
+        source, imported, imported_acts = import_source(fbx)
         try:
             for c in group:
                 preset = resolve_preset(c["preset"], preset_dir)
                 if not os.path.isfile(preset):
                     raise SystemExit(f"no such preset: {preset}")
-                act = source_actions(source, imported, c.get("action"))[0]
+                act = source_actions(source, imported_acts, c.get("action"))[0]
                 missing = map_bones(bpy.context.scene, source, target, act, preset)
                 if missing:
                     log(f"  {c['id']}: {len(missing)} unmapped source bone(s): "
@@ -224,17 +237,25 @@ def main():
                                      frame_end=int(end))
                 baked = target.animation_data.action
                 baked.name = c["id"]
+                # Nothing points at a baked action once the next clip replaces it
+                # on the rig, and unused actions do not survive a save.
                 baked.use_fake_user = True
-                out = os.path.join(opts["out"], c["id"] + ".glb")
-                export_clip(target, baked, out)
-                log(f"  {c['id']} -> {out} ({int(end - start) + 1} frames)")
+                baked_names.append(c["id"])
+                log(f"  {c['id']}: baked {int(end - start) + 1} frames")
         finally:
-            remove(imported)
+            remove(imported, imported_acts)
 
-    if dry and failures:
-        raise SystemExit(f"unmapped bones in: {', '.join(failures)} — fix the preset "
-                         "in the ARP Remap panel and re-export it")
-    log("done")
+    if dry:
+        if failures:
+            raise SystemExit(f"unmapped bones in: {', '.join(failures)} — fix the preset "
+                             "in the ARP Remap panel and re-export it")
+        log("dry run, nothing saved")
+        return
+
+    path = os.path.abspath(opts["out"])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+    log(f"{len(baked_names)} action(s) -> {path}: {', '.join(baked_names)}")
 
 
 try:
