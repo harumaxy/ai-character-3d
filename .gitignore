@@ -1,0 +1,8 @@
+node_modules
+.env
+in
+out
+.scratch
+*.local.md
+motions/**/*.fbx
+motions/**/*.glb
