@@ -1,5 +1,6 @@
 /**
  * `c3d model <char> [--single] [--version v3.1-20260211] [--faces 20000] [--quad]
+ *                   [--low-poly] [--draft] [--autofix]
  *                   [--rig] [--animate] [--only walk,run] [--fbx] [--task id] [--balance]`
  *
  * Tripo API v3: views -> 3D model (+ rig, + preset animations, + FBX for Blender).
@@ -11,6 +12,8 @@
  *   out/chars/<char>/model/model.fbx            models/convert FBX, blender preset (--fbx)
  *   out/chars/<char>/model/tasks.json           every task id, so steps resume instead of re-paying
  *
+ * `--draft` skips texture (20 credits instead of 40) to check geometry first.
+ * `--faces n` costs nothing; `--low-poly` (+10) buys game-ready edge flow.
  * `--single` uses image-to-model on views/front.png only (cheaper, less faithful).
  * `--task <task_id>` adopts an existing model task (rig / animate / fbx only).
  * Do mesh edits (decimate / segment) BEFORE rigging: they discard the rig.
@@ -38,6 +41,7 @@ export async function run(argv: string[]): Promise<void> {
   if (!name)
     die(
       "usage: bun run c3d model <char> [--single] [--version v3.1-20260211] [--faces n] [--quad] " +
+        "[--low-poly] [--draft] [--autofix] " +
         "[--rig] [--animate] [--only walk,run] [--fbx] [--task task_id] [--balance]",
     );
   const client = tripoClient();
@@ -60,8 +64,20 @@ export async function run(argv: string[]): Promise<void> {
     texture_quality: "detailed" as const,
     // The views were made to match the front image; keep Tripo's frame on it.
     orientation: "align_image" as const,
+    // Bake what the views show instead of re-deriving the texture from geometry.
+    texture_alignment: "original_image" as const,
     ...(flag(argv, "faces") ? { face_limit: num(argv, "faces", 0) } : {}),
     ...(has(argv, "quad") ? { quad: true } : {}),
+    // Direct low-poly with usable edge flow (+10 credits, face_limit 500-20000).
+    // Do it here, not as a post-process: mesh edits discard the rig.
+    ...(has(argv, "low-poly") ? { smart_low_poly: true } : {}),
+    // Tripo pre-processes the input images. Off by default: it is another
+    // black box on top of views that are already matted and squared.
+    ...(has(argv, "autofix") ? { enable_image_autofix: true } : {}),
+    // Geometry only, 20 credits instead of 40 — for checking shape before
+    // paying for texture. `orientation: align_image` needs texture, so a draft
+    // comes out in Tripo's own frame.
+    ...(has(argv, "draft") ? { texture: false, pbr: false } : {}),
     ...(flag(argv, "seed") ? { model_seed: num(argv, "seed", 0) } : {}),
     ...char.tripo,
   };

@@ -57,9 +57,16 @@ export const VIEWS = Object.keys(PLAIN) as View[];
 
 const VALUE_FLAGS = new Set(["--image", "-i", "--only", "--seed", "--matte", "--angles-strength"]);
 
-/** Square the image onto a 1024 canvas with the subject centred. */
+/**
+ * Tripo's tutorials ask for 2048 or better, but ComfyUI renders these at 1024
+ * and upscaling adds no detail for Tripo to read. Raise this once the views
+ * themselves are generated (or ESRGAN'd) larger.
+ */
+const CANVAS = 1024;
+
+/** Square the image onto the canvas with the subject centred. */
 const square = (src: string | Buffer, dest: string, bg: string) =>
-  sharp(src).resize(1024, 1024, { fit: "contain", background: bg }).png().toFile(dest);
+  sharp(src).resize(CANVAS, CANVAS, { fit: "contain", background: bg }).png().toFile(dest);
 
 export async function run(argv: string[]): Promise<void> {
   const name = positional(argv, VALUE_FLAGS);
