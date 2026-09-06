@@ -6,3 +6,4 @@ out
 *.local.md
 motions/**/*.fbx
 motions/**/*.glb
+.tripo
