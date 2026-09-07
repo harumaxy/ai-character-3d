@@ -31,11 +31,13 @@ Blender exits 0 even on an uncaught exception, so main() is wrapped and exits 1.
 """
 
 import json
+import math
 import os
 import sys
 import traceback
 
 import bpy
+from mathutils import Matrix
 
 # ARP puts its built-in maps next to the addon. Resolved lazily: the addon may
 # be installed as a legacy addon or as an extension, with different roots.
@@ -120,7 +122,72 @@ def import_source(path):
     rig = next((o for o in new if o.type == "ARMATURE"), None)
     if rig is None:
         raise SystemExit(f"no armature in {path}")
+    for a in new_acts:
+        drop_object_channels(a)
     return rig, new, new_acts
+
+
+def drop_object_channels(action):
+    """Delete the action's object-level transform curves, keeping the bone ones.
+
+    The FBX importer folds the file's axis convention into the armature object
+    -- and keys it, so location/rotation_euler/scale sit in the action next to
+    the pose.bones curves. Any frame change then snaps the object back to the
+    keyed value, which silently undoes face_target() below. ARP's own
+    _freeze_armature deletes the same curves later, so nothing downstream wants
+    them; they only need to go before the rest pose is redefined, not after.
+    """
+    dropped = 0
+    for layer in action.layers:
+        for strip in layer.strips:
+            for slot in action.slots:
+                bag = strip.channelbag(slot)
+                if bag is None:
+                    continue
+                for fc in list(bag.fcurves):
+                    if not fc.data_path.startswith("pose.bones"):
+                        bag.fcurves.remove(fc)
+                        dropped += 1
+    return dropped
+
+
+def side_vector(rig, left, right):
+    """World vector from the rig's right bone to its left one, or None."""
+    l, r = rig.pose.bones.get(left), rig.pose.bones.get(right)
+    if l is None or r is None:
+        return None
+    return rig.matrix_world @ l.head - rig.matrix_world @ r.head
+
+
+def face_target(scene, source_rig, target_rig):
+    """Turn the source 180 degrees about Z if it faces away from the target.
+
+    Mixamo exports face -Y once imported, the same way an ARP rig does. The
+    Quaternius UAL packs are Unreal exports and come in facing +Y, and ARP's
+    remap is not symmetric about that: _copy_bone_rest aims each source bone at
+    its target's *world* direction, so on a source that is turned around it
+    "aligns" the left arm by folding it across the chest, and every clip then
+    bakes with the arms swapped and the torso twisted. Bone rotations are read
+    in world space too (_retarget's mat_rest_diff), so the fix is to turn the
+    whole armature, not to mirror the bone map.
+    """
+    # Both sides come out of the bone map, so this works whatever the source
+    # calls its bones: upperarm_l/upperarm_r, mixamorig:LeftArm/RightArm...
+    rows = {b.name: b.source_bone for b in scene.bones_map_v2 if b.source_bone}
+    for tgt_l, src_l in rows.items():
+        src_r = rows.get(tgt_l[:-2] + ".r") if tgt_l.endswith(".l") else None
+        if src_r is None:
+            continue
+        tgt = side_vector(target_rig, tgt_l, tgt_l[:-2] + ".r")
+        src = side_vector(source_rig, src_l, src_r)
+        if tgt is None or src is None or src.length < 1e-4 or tgt.length < 1e-4:
+            continue
+        if tgt.dot(src) < 0:
+            source_rig.matrix_world = Matrix.Rotation(math.pi, 4, "Z") @ source_rig.matrix_world
+            bpy.context.view_layer.update()
+            return True
+        return False
+    return False
 
 
 def assign_action(rig, action):
@@ -269,6 +336,8 @@ def main():
                     raise SystemExit(f"no such preset: {preset}")
                 act = source_actions(source, imported_acts, c.get("action"))[0]
                 missing = map_bones(bpy.context.scene, source, target, act, preset)
+                if face_target(bpy.context.scene, source, target):
+                    log("  turned the source 180 deg: it faced away from the rig")
                 if missing:
                     log(f"  {c['id']}: {len(missing)} unmapped source bone(s): "
                         + ", ".join(missing))
