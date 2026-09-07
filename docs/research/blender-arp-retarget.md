@@ -97,7 +97,7 @@ bun run c3d sheet scavenger --size 128
 
 `mixamo_fk` / `mixamo_ik` / `mixamo_fbx_ik` / `unreal_mannequin_remap` / `rigify` / `daz` / `rokoko_*` / `mocopi` / `xsens` ほか。
 
-- **Mixamo → `mixamo_fk`**。スプライト用途で IK 版を選ぶ理由はない。IK 極の破綻リスクが増えるだけ
+- **Mixamo → `mixamo_fbx_ik`**。`mixamo_fk` / `mixamo_ik` は脊椎 2 本の旧世代。下の「同梱 Mixamo プリセットは 2 世代ある」参照
 - **Quaternius UAL → `unreal_mannequin_remap` が出発点**。UAL のボーン名は UE Manny 系（`pelvis` / `spine_01` / `thigh_l` / `calf_l` / `clavicle_l` / `upperarm_l`）で同系統
 
 ### 名前マッチの挙動（`_import_config`、L4578）
@@ -131,6 +131,80 @@ bpy.ops.arp.retarget('EXEC_DEFAULT', frame_start=s, frame_end=e)
 - `scn.source_rig` への代入は**アクションを載せた後**。順序を逆にすると `source_action` が空のまま `build_bones_list` の `poll` が落ちる
 - Blender 4.4+ はアクションスロットがあるので、`save_source_action()` が `"<action>[%%%]<slot>"` を組み立てる。自前で `scn.source_action` を文字列で作らず、rig にアクションを載せて ARP に書かせるほうが安全
 - `arp.build_bones_list` は `poll` で `active_object != None` かつ `source_action` / `source_rig` / `target_rig` が全部埋まっていることを要求する
+
+### 同梱 Mixamo プリセットは 2 世代ある
+
+| プリセット | ソース名 | 脊椎 | 足 |
+|---|---|---|---|
+| `mixamo_fk` / `mixamo_ik` | `Hips`（プレフィックス無し） | **2 本** | FK / IK |
+| `mixamo_fbx_ik` | `mixamorig:Hips`（フルネーム） | **3 本** | IK + 膝ポール |
+
+**`mixamo_fbx_ik` を使う。** 旧世代は脊椎 2 本 前提 → Mixamo の `Spine` が落ち、`c_spine_03.x`
+無アニメ。胴の曲げ 1 段 消失。dry-run に `mixamorig:Spine` が unmapped で出る。
+
+ARP 自身の脊椎デフォルトは 3 本（`auto_rig.py:1299` `spine_count: IntProperty(default=3)`）。
+つまり **旧世代プリセットは ARP 自身のデフォルトリグと噛み合わない**。名前が `fk`/`ik` としか
+違わないので世代差に気付けない。ここが唯一の実質的な罠。
+
+`mixamo_fbx_ik` は unmapped ゼロ。`LeftEye`/`RightEye` の ERROR 報告も出ない。
+専用 `.bmap` を手作りする必要は無い。
+
+足が IK になる（`c_foot_ik.l` + `c_leg_pole.l`）。ARP 公式は歩行・走行では IK を推奨（FK は
+足が滑る）。ベイク時に `Warning: Straight IK chain (c_foot_ik.l), adding offset` が出るが、
+リグのレストポーズで膝が伸びきっているため ARP が自動でオフセットを入れただけ。
+
+FK 版（脊椎を手で直した `mixamo_fk`）との実測差（左手位置・身長比）:
+
+- walk: ソース `[+19 +12 -9]` / FK `[+20 +14 -17]` / **fbx_ik `[+20 +14 -17]`**
+- sneak: ソース `[-49 +2 +17]` / FK `[-56 -5 +11]` / **fbx_ik `[-52 -5 +11]`**
+
+同等。sneak は fbx_ik のほうが僅かにソースに近い。
+
+### Redefine Rest Pose は腕だけに掛ける
+
+`align_rest_pose()` = パネルの `Redefine Rest Pose` → `Copy Selected Bones Rotation` → `Apply`。
+Mixamo は T ポーズ、ARP リグ（Tripo の A ポーズ由来）は腕が下がる。差 約 65 度。
+補正しないと腕が全フレーム 誤る（実測: walk の左手が身長比 `[x+23 y-8 z-7]` のところ
+`[x-18 y0 z+2]` で全フレーム 固着）。
+
+**選ぶのは腕だけ** — `c_shoulder.` / `c_arm_fk.` / `c_forearm_fk.` / `c_hand_fk.`。
+ARP 公式も "select misaligned bones (typically arms/legs)"。全 52 本 選ぶと胴の傾きがずれる。
+頭の前傾 `(head.y - root.x.y) / 身長` の実測:
+
+- walk: ソース -2% / 腕のみ -2% / 全ボーン **+4%**
+- sneak: ソース +27% / 腕のみ +27% / 全ボーン **+20%**
+
+（`mixamo_fk` を脊椎修正した版での計測。`mixamo_fbx_ik` でも同じ傾向）
+
+指は除外。既に揃っていて、スプライト解像度では見えない。
+
+operator 順は `auto_scale` → `redefine_rest_pose` → `retarget`。ARP 公式・実践記事とも この順。
+
+`preserve` で Apply の operator が変わる（パネル `auto_rig_remap.py:5177`）:
+
+```
+preserve=True  -> arp.save_pose_rest
+preserve=False -> arp.copy_raw_coordinates   # ソースを複製してベイクし直す。遅い
+```
+
+preserve=True 経路は **マップ済み全ボーン** のレスト差を再計算して remap ボーンに適用する
+（`auto_rig_remap.py:3642`、`mat_rest_diff`）。選択を腕に絞っても他ボーンが無傷なわけではない。
+両経路をベイクして比べたが出力は同一。速い preserve=True を使う。
+
+### 検証は目視でなく数値
+
+前傾クリップ（Mixamo `crouched sneaking`、UAL `Jump_Start`）は elev 30 のスプライトで見ると
+「上半身が倒れて壊れている」ように見える。**ソースが実際にそう動いている**。
+Jump_Start は手が身長の 73% 横に出るモーション。目視だけで判断すると正しい出力を壊れと誤判定する。
+
+判定はソース FBX を import して同じ量を測り、ベイク結果と比べる:
+
+- 身長 = `head.z - foot.l.z`
+- 前傾 = `(head.y - root.x.y) / 身長`
+- 腕 = `(hand.l - root.x) / 身長`
+
+ソース側のボーン名は Mixamo が `mixamorig:Hips/Head/LeftFoot/LeftHand`、UAL が
+`pelvis/Head/foot_l/hand_l`。ターゲット側は deform ボーン `root.x/head.x/foot.l/hand.l`。
 
 ## 5. Blender MCP から叩く場合
 
@@ -184,6 +258,11 @@ bone_7 … bone_22（無名 18 本）  計 32 本
   X 0.233 / Y 1.000 / Z 0.495 で、Blender import 後は X 0.233（薄い）/ Y 0.495（肩幅）/ Z 1.000（身長）。
   肩幅が Y に伸びている＝ ±X を向いている。§2-1 で回転とスケールを直しておくこと
 - **Mixamo の DL 設定**は Skin = "Without Skin"、FBX Binary、30 fps（`motions/mixamo/README.md`）
+- **`motions/quaternius/ual.bmap` は同梱 `unreal_mannequin_remap` のタイポを引き継いでいる。**
+  `index_03_r` と `middle_02_r` の target が `.l`（右指が左指へ）。スプライトでは見えないが、
+  指を使うなら直す
+- **ual.bmap は足を IK にマップする**（`foot_l -> c_foot_ik.l`、`ball_l -> c_toes_ik.l`）。
+  mixamo 側は全 FK。`src/motions.ts` の「FK maps, not IK」は Mixamo だけの話
 
 ## 8. バインドエンジンの選び方 — 腕が胴に溶ける問題
 

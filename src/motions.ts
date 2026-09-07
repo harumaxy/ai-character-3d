@@ -28,8 +28,7 @@ export interface Motion {
   action?: string;
   /**
    * Auto-Rig Pro bone map: a built-in preset name (ARP's remap_presets/) or a
-   * path to a .bmap. FK maps, not IK — sprite frames never see a pole vector,
-   * and IK poles are what goes wrong first on a rig ARP did not generate itself.
+   * path to a .bmap.
    */
   preset: string;
   /** Frames to sample from the clip. */
@@ -40,11 +39,15 @@ export interface Motion {
   fps: number;
 }
 
-const MIXAMO = "mixamo_fk";
-// Quaternius/UAL is UE Mannequin naming, so ARP's built-in Unreal map is the
-// starting point — but ARP spells the head bone "head" and UAL spells it
-// "Head", and the mismatch silently drops the head from the bone list.
-// motions/quaternius/ual.bmap is that preset with the one name corrected.
+// ARP ships two generations of Mixamo map. mixamo_fk/mixamo_ik are the old
+// ones: bare bone names (Hips, not mixamorig:Hips) and a two-bone spine, which
+// drops Mixamo's Spine entirely and leaves c_spine_03.x unanimated on a rig
+// built with ARP's own default of three. mixamo_fbx_ik is the current one --
+// three spine bones, no unmapped rows, and it retargets the feet through
+// c_foot_ik with a knee pole instead of FK, which is what ARP recommends for
+// locomotion. Same hand placement as the FK map, measured against the source.
+const MIXAMO = "mixamo_fbx_ik";
+
 const UAL1 = "motions/quaternius/UAL1_Standard.fbx";
 const UAL_MAP = "motions/quaternius/ual.bmap";
 

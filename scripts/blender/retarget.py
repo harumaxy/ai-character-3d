@@ -41,6 +41,11 @@ import bpy
 # be installed as a legacy addon or as an extension, with different roots.
 BUILTIN_PRESET_DIR = "remap_presets"
 
+# Target-side names of the ARP arm chain, as the .bmap presets spell them. The
+# arms are the only chain whose rest orientation differs between a mocap
+# skeleton and an ARP rig; see align_rest_pose().
+ARM_TARGETS = ("c_shoulder.", "c_arm_fk.", "c_forearm_fk.", "c_hand_fk.")
+
 
 def log(msg):
     print("[retarget] " + msg, flush=True)
@@ -84,6 +89,9 @@ def resolve_preset(preset, preset_dir):
 def self_check():
     assert resolve_preset("mixamo_fk", "/p") == os.path.join("/p", "mixamo_fk.bmap")
     assert resolve_preset("a/b.bmap", "/p") == os.path.abspath("a/b.bmap")
+    assert "c_arm_fk.l".startswith(ARM_TARGETS)
+    assert not "c_spine_01.x".startswith(ARM_TARGETS)
+    assert not "c_root_master.x".startswith(ARM_TARGETS)
 
 
 def find_target(name):
@@ -179,6 +187,44 @@ def map_bones(scene, source_rig, target_rig, action, preset):
     return unmatched(scene)
 
 
+def align_rest_pose(scene, source_rig):
+    """Pose the source's arms into the target's rest pose before baking.
+
+    ARP retargets a source bone's rotation *relative to its own rest pose*, so a
+    T-posed Mixamo skeleton driving an A-posed ARP rig adds the whole 65 degrees
+    between the two rest poses to every arm key: the upper arms swing past
+    vertical and the hands cross over the chest. This is the Remap panel's
+    "Redefine Rest Pose" -> "Copy Selected Bones Rotation" -> "Apply", which
+    damped-tracks each selected source bone onto its target's rest direction and
+    stores the result as a per-bone offset (preserve=True leaves the source
+    armature's own rest pose alone).
+
+    Only the arms. ARP's manual says to select the *misaligned* bones, and on
+    these skeletons that is the arm chain alone -- spine, pelvis and legs rest in
+    the same direction on both rigs. Handing copy_bone_rest the spine or the root
+    aims them at a controller that is not a spine direction at all, and every
+    clip that starts crouched (Mixamo's sneak, UAL's Jump_Start) bakes with the
+    torso tipped flat forward. Fingers are skipped too: they are already aligned
+    and invisible at sprite scale.
+    """
+    mapped = {b.source_bone for b in scene.bones_map_v2 if b.name.startswith(ARM_TARGETS)}
+    if not mapped:
+        return 0
+    # EXEC_DEFAULT: invoke() opens a props dialog that --background never answers.
+    bpy.ops.arp.redefine_rest_pose("EXEC_DEFAULT", preserve=True, rest_pose="REST")
+    # Leaves the source rig active and in pose mode with nothing selected.
+    # Blender 5 dropped Bone.select; PoseBone.select is what is left. Selecting
+    # only the arms also dodges an ARP bug: _copy_bone_rest never resets its
+    # target name between bones, so an unselected one would otherwise get aimed
+    # at whatever the previous bone matched.
+    for pb in source_rig.pose.bones:
+        pb.select = pb.name in mapped
+    bpy.ops.arp.copy_bone_rest()
+    bpy.ops.arp.save_pose_rest()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return len(mapped)
+
+
 def remove(objects, actions):
     """Drop an imported source: its objects and its takes.
 
@@ -232,6 +278,8 @@ def main():
                         f"from {act.name} (dry run, not baked)")
                     continue
                 bpy.ops.arp.auto_scale()
+                n = align_rest_pose(bpy.context.scene, source)
+                log(f"  {c['id']}: rest pose aligned on {n} arm bone(s)")
                 start, end = act.frame_range
                 bpy.ops.arp.retarget("EXEC_DEFAULT", frame_start=int(start),
                                      frame_end=int(end))
