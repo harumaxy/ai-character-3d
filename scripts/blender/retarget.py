@@ -152,11 +152,19 @@ def drop_object_channels(action):
 
 
 def side_vector(rig, left, right):
-    """World vector from the rig's right bone to its left one, or None."""
-    l, r = rig.pose.bones.get(left), rig.pose.bones.get(right)
+    """World vector from the rig's right bone to its left one, at rest, or None.
+
+    Rest, not pose: a posed vector answers "which way is this skeleton facing on
+    the frame that happens to be current", and the current frame here is whatever
+    the previous clip's bake left behind. On a crouched or mid-roll frame the
+    feet cross and the vector flips, so the same FBX would be judged differently
+    from one clip to the next. The rest pose is also what ARP's _copy_bone_rest
+    actually compares, so it is the honest input.
+    """
+    l, r = rig.data.bones.get(left), rig.data.bones.get(right)
     if l is None or r is None:
         return None
-    return rig.matrix_world @ l.head - rig.matrix_world @ r.head
+    return rig.matrix_world @ l.head_local - rig.matrix_world @ r.head_local
 
 
 def face_target(scene, source_rig, target_rig):
@@ -174,6 +182,11 @@ def face_target(scene, source_rig, target_rig):
     # Both sides come out of the bone map, so this works whatever the source
     # calls its bones: upperarm_l/upperarm_r, mixamorig:LeftArm/RightArm...
     rows = {b.name: b.source_bone for b in scene.bones_map_v2 if b.source_bone}
+    # Every mapped pair votes. One pair is enough in principle, but the first one
+    # the bone map happens to yield is the toes (c_toes_ik.l), whose left/right
+    # separation is the smallest on the skeleton -- a weak signal to hang a whole
+    # clip on when a wrong answer swaps the arms.
+    agree = 0.0
     for tgt_l, src_l in rows.items():
         src_r = rows.get(tgt_l[:-2] + ".r") if tgt_l.endswith(".l") else None
         if src_r is None:
@@ -182,12 +195,12 @@ def face_target(scene, source_rig, target_rig):
         src = side_vector(source_rig, src_l, src_r)
         if tgt is None or src is None or src.length < 1e-4 or tgt.length < 1e-4:
             continue
-        if tgt.dot(src) < 0:
-            source_rig.matrix_world = Matrix.Rotation(math.pi, 4, "Z") @ source_rig.matrix_world
-            bpy.context.view_layer.update()
-            return True
+        agree += tgt.normalized().dot(src.normalized())
+    if agree >= 0:
         return False
-    return False
+    source_rig.matrix_world = Matrix.Rotation(math.pi, 4, "Z") @ source_rig.matrix_world
+    bpy.context.view_layer.update()
+    return True
 
 
 def assign_action(rig, action):
