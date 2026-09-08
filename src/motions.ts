@@ -49,6 +49,8 @@ export interface Motion {
 const MIXAMO = "mixamo_fbx_ik";
 
 const UAL1 = "motions/quaternius/UAL1_Standard.fbx";
+const UAL2 = "motions/quaternius/UAL2_Standard.fbx";
+// UAL1 and UAL2 ship the same UE5-Manny-named rig, so one map covers both.
 const UAL_MAP = "motions/quaternius/ual.bmap";
 
 export const MOTIONS: Motion[] = [
@@ -71,5 +73,58 @@ export const MOTIONS: Motion[] = [
     frames: 4,
     loop: false,
     fps: 10,
+  },
+  // Roll is the one clip here that travels: the Standard packs have root motion
+  // disabled, but the pelvis still carries ~1 m of forward slide (the _RM twin
+  // puts 5 m more on `root`, which the bone map does not read). `c3d render`
+  // re-centres the camera on the mesh bounds every frame by default
+  // (--track xy), so the roll stays framed; --track none would walk it out.
+  { id: "roll", fbx: UAL1, action: "Roll", preset: UAL_MAP, frames: 8, loop: false, fps: 12 },
+  {
+    id: "aim_pistol",
+    fbx: UAL1,
+    action: "Pistol_Aim_Neutral",
+    preset: UAL_MAP,
+    frames: 2,
+    loop: true,
+    fps: 4,
+  },
+  {
+    id: "pickup",
+    fbx: UAL1,
+    action: "PickUp_Table",
+    preset: UAL_MAP,
+    frames: 8,
+    loop: false,
+    fps: 12,
+  },
+  // Quaternius' Pro library splits the sword set further (Sword_Light_*,
+  // Sword_Dash_RM); the free Standard packs carry these three.
+  {
+    id: "dash",
+    fbx: UAL2,
+    action: "Sword_Dash",
+    preset: UAL_MAP,
+    frames: 8,
+    loop: false,
+    fps: 12,
+  },
+  {
+    id: "attack_a",
+    fbx: UAL2,
+    action: "Sword_Regular_A",
+    preset: UAL_MAP,
+    frames: 6,
+    loop: false,
+    fps: 12,
+  },
+  {
+    id: "attack_b",
+    fbx: UAL2,
+    action: "Sword_Regular_B",
+    preset: UAL_MAP,
+    frames: 6,
+    loop: false,
+    fps: 12,
   },
 ];
