@@ -310,30 +310,36 @@ def main():
         base_center = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, 0))
         log(f"{m['id']}: height {hi.z - lo.z:.2f} m (framing {height:.2f}), ground z {ground_z:.2f}")
 
+        dests = {}
         for d in dirs:
-            dest = os.path.join(out_dir, m["id"], d)
-            os.makedirs(dest, exist_ok=True)
-            for k, t in enumerate(times):
-                scene.frame_set(int(t), subframe=t - int(t))
-                view_layer.update()
-                if opts["track"] == "xy":
-                    depsgraph = bpy.context.evaluated_depsgraph_get()
-                    lo, hi = bounds(meshes, depsgraph)
-                    center = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, 0))
-                else:
-                    center = base_center
-                # Camera aims at mid-height above the ground so feet sit on one line.
-                target = Vector((center.x, center.y, ground_z + height / 2))
+            dests[d] = os.path.join(out_dir, m["id"], d)
+            os.makedirs(dests[d], exist_ok=True)
+        # Frame outside, direction inside: the pose is the same for all eight
+        # cameras, so posing the rig and measuring its bounds once per frame
+        # instead of once per (frame, direction) drops seven of every eight
+        # depsgraph evaluations. Only the camera moves in the inner loop.
+        for k, t in enumerate(times):
+            scene.frame_set(int(t), subframe=t - int(t))
+            view_layer.update()
+            if opts["track"] == "xy":
+                depsgraph = bpy.context.evaluated_depsgraph_get()
+                lo, hi = bounds(meshes, depsgraph)
+                center = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, 0))
+            else:
+                center = base_center
+            # Camera aims at mid-height above the ground so feet sit on one line.
+            target = Vector((center.x, center.y, ground_z + height / 2))
+            for d in dirs:
                 place_camera(cam, target, AZIMUTH[d] + yaw, elev)
                 view_layer.update()
                 if "color" in passes:
                     view_layer.material_override = None
                     scene.view_settings.view_transform = "Standard"
-                    render(scene, os.path.join(dest, f"{k}.png"))
+                    render(scene, os.path.join(dests[d], f"{k}.png"))
                 if normal_mat is not None:
                     view_layer.material_override = normal_mat
                     scene.view_settings.view_transform = "Raw"
-                    render(scene, os.path.join(dest, f"{k}.normal.png"))
+                    render(scene, os.path.join(dests[d], f"{k}.normal.png"))
                     view_layer.material_override = None
                     scene.view_settings.view_transform = "Standard"
                 written += 1
