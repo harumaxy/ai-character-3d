@@ -107,8 +107,16 @@ def find_character():
 def set_engine(scene, engine):
     if engine == "workbench":
         scene.render.engine = "BLENDER_WORKBENCH"
-        scene.display.shading.light = "STUDIO"
+        # FLAT, not STUDIO: the studio light is fixed to the camera, so orbiting
+        # it lights all eight directions identically -- but it also darkens the
+        # texture by roughly a third and lays a specular hotspot on the hood and
+        # shoulders that slides around as the character turns. A moving highlight
+        # is exactly what palette quantisation cannot follow. Flat gives the
+        # texture back unmodified, which is the honest input for a pixel-art
+        # pass; shading gets drawn in afterwards, not baked in here.
+        scene.display.shading.light = "FLAT"
         scene.display.shading.color_type = "TEXTURE"
+        scene.display.shading.show_specular_highlight = False
         return
     # 4.2-4.x call it BLENDER_EEVEE_NEXT, 5.x went back to BLENDER_EEVEE.
     for name in ("BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"):
