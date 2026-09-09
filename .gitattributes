@@ -1,0 +1,4 @@
+# The repo is LF everywhere; core.autocrlf=true would otherwise rewrite every
+# checkout to CRLF and show the whole tree as modified. Binary files are
+# detected by text=auto and left alone.
+* text=auto eol=lf
