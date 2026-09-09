@@ -8,11 +8,11 @@ against a .blend holding the rigged, skinned character:
       --clips out/chars/<c>/clips.json --out out/chars/<c>/anim.blend \
       [--target <armature object>] [--dry-run]
 
-The render stage opens that .blend and switches actions. Nothing is exported:
-a GLB per motion meant five copies of the same 27k-triangle mesh, and the
+The render stage opens that .blend and switches actions. Nothing is exported
+here: a GLB per motion meant five copies of the same 27k-triangle mesh, and the
 export/import round trip is what drags the glTF importer's hidden bone-display
-icosphere into the camera framing. Taking a rigged character to a game engine is
-a separate job — use Auto-Rig Pro's own exporter for that, not this script.
+icosphere into the camera framing. Taking the rigged character to a game engine
+is a separate job — see export_godot.py, which drives ARP's own exporter.
 
 clips.json: [{"id": "walk", "fbx": "motions/mixamo/walking.fbx",
               "preset": "mixamo_fk"},
@@ -53,7 +53,8 @@ def log(msg):
     print("[retarget] " + msg, flush=True)
 
 
-def parse_args():
+def parse_args(required=("clips", "out")):
+    """`-- --flag value` into a dict. Shared with the sibling stage scripts."""
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     opts = {"target": "", "dry-run": False}
     key = None
@@ -64,7 +65,7 @@ def parse_args():
         elif key:
             opts[key] = a
             key = None
-    for k in ("clips", "out"):
+    for k in required:
         if k not in opts or opts[k] is True:
             raise SystemExit(f"missing --{k}")
     return opts
@@ -388,12 +389,14 @@ def main():
     log(f"{len(baked_names)} action(s) -> {path}: {', '.join(baked_names)}")
 
 
-try:
-    main()
-except SystemExit as e:
-    if e.code:
-        log(f"ERROR: {e.code}")
+# Guarded: export_godot.py imports this module for find_target/parse_args.
+if __name__ == "__main__":
+    try:
+        main()
+    except SystemExit as e:
+        if e.code:
+            log(f"ERROR: {e.code}")
+            sys.exit(1)
+    except Exception:
+        traceback.print_exc()
         sys.exit(1)
-except Exception:
-    traceback.print_exc()
-    sys.exit(1)

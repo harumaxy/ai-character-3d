@@ -6,6 +6,7 @@
  *   bun run c3d model   <char>            Tripo: multiview -> GLB/FBX (+ rig)
  *   bun run c3d retarget <char>           Blender headless: Mixamo/UAL clips -> anim GLBs
  *   bun run c3d render  <char>            Blender headless: 8-direction sprite frames
+ *   bun run c3d export  <char>            Blender headless: ARP -> Godot 4 .glb
  *
  * Stages are imported lazily so a broken sibling cannot stop the working ones.
  */
@@ -16,6 +17,7 @@ export const STAGES = {
   model: () => import("./stages/model"),
   retarget: () => import("./stages/retarget"),
   render: () => import("./stages/render"),
+  export: () => import("./stages/export"),
   sheet: () => import("./stages/sheet"),
 } satisfies Record<string, () => Promise<{ run(argv: string[]): Promise<void> }>>;
 

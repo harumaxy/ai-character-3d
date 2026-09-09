@@ -25,3 +25,5 @@ export const rigBlend = (name: string) => join(charDir(name), "rig.blend");
 export const animBlend = (name: string) => join(charDir(name), "anim.blend");
 export const renderDir = (name: string) => join(charDir(name), "render");
 export const sheetDir = (name: string) => join(charDir(name), "sheet");
+/** `c3d export`: the rig plus every baked action as one Godot-ready glTF binary. */
+export const godotGlb = (name: string) => join(charDir(name), `${name}.glb`);

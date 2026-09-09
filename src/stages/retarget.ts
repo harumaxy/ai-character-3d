@@ -11,8 +11,7 @@
  * docs/research/blender-arp-retarget.md.
  *
  * Nothing is exported to glTF/FBX here. Taking the animated character to a game
- * engine is a separate job with different requirements — Auto-Rig Pro's own
- * exporter covers it.
+ * engine is a separate job with different requirements — `c3d export` covers it.
  *
  * Start with --dry-run. It maps the bones and reports what the preset failed to
  * match, without baking anything.

@@ -13,10 +13,12 @@ bun run c3d model   <char> --faces 20000 --low-poly  # Tripo: 4 面 → model.gl
 bun run c3d retarget <char>           # Blender headless: ARP Remap で motions/ を anim.blend に焼く
 bun run c3d render  <char>            # Blender headless: 8 方向 × フレーム PNG（color + normal）
 bun run c3d sheet   <char> --size 128 # スプライトシート PNG + JSON
+bun run c3d export  <char>            # Blender headless: ARP Export → Godot 4 向け .glb（全アニメ入り）
 ```
 
 `chars/<name>.yaml` がキャラ定義。生成物は `out/chars/<name>/` 配下（gitignore）。
 モーション素材は `motions/mixamo/` `motions/quaternius/`（FBX は gitignore、README のみ）。
+`export` はゲームエンジン向けの枝で、`render` とは独立に `anim.blend` を読む。Godot humanoid のボーン名にリネームし、アクション 1 本 = glTF アニメ 1 本で書き出す。
 `retarget` は `out/chars/<name>/rig.blend`（ARP でリグ・スキニング済み、手作業）を要求する。手順は `docs/research/blender-arp-retarget.md`。
 
 ## コード編集後
