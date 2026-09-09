@@ -27,3 +27,5 @@ export const renderDir = (name: string) => join(charDir(name), "render");
 export const sheetDir = (name: string) => join(charDir(name), "sheet");
 /** `c3d export`: the rig plus every baked action as one Godot-ready glTF binary. */
 export const godotGlb = (name: string) => join(charDir(name), `${name}.glb`);
+/** `c3d export --anim-only`: the same actions on a stand-in mesh, for a shared AnimationLibrary. */
+export const animLibGlb = (name: string) => join(charDir(name), `${name}-anims.glb`);

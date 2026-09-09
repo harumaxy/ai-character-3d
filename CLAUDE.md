@@ -14,11 +14,13 @@ bun run c3d retarget <char>           # Blender headless: ARP Remap で motions/
 bun run c3d render  <char>            # Blender headless: 8 方向 × フレーム PNG（color + normal）
 bun run c3d sheet   <char> --size 128 # スプライトシート PNG + JSON
 bun run c3d export  <char>            # Blender headless: ARP Export → Godot 4 向け .glb（全アニメ入り）
+bun run c3d export  <char> --anim-only # 同上、メッシュ抜き（1 三角形）→ Godot の AnimationLibrary 用
 ```
 
 `chars/<name>.yaml` がキャラ定義。生成物は `out/chars/<name>/` 配下（gitignore）。
 モーション素材は `motions/mixamo/` `motions/quaternius/`（FBX は gitignore、README のみ）。
 `export` はゲームエンジン向けの枝で、`render` とは独立に `anim.blend` を読む。Godot humanoid のボーン名にリネームし、アクション 1 本 = glTF アニメ 1 本で書き出す。
+`--anim-only` は共有スケルトン運用向け。アニメは 1 ファイル（AnimationLibrary）にまとめ、キャラ側はメッシュ + スケルトンだけ持つ構成にできる。
 `retarget` は `out/chars/<name>/rig.blend`（ARP でリグ・スキニング済み、手作業）を要求する。手順は `docs/research/blender-arp-retarget.md`。
 
 ## コード編集後
@@ -42,6 +44,7 @@ bun test
 
 - Bash tool は `cd` 後に PATH を失うことがある。PowerShell tool を使う。
 - Blender は未捕捉例外でも exit 0 → `render_sprites.py` は try/except で 1 を返す。
+- `c3d export` 中の `gather_actions_hook fails ... 'ActionsData' object has no attribute 'blender_tracks'` は無害。ARP の NLA 名付けフックが Blender 5.2 の glTF エクスポータ API に追従してないだけで、アニメ本体は ARP 側の bake で出ている（キー数・尺をキャラ glb と突合済み）。
 - Tripo の出力 URL は成功後 5 分で失効。`tasks.json` に task_id を残してあるので、失効したら `tripo task get <id>` で取り直す。
 - glTF は Blender で -Y 向き、Quaternius/UE 系 FBX は +Y 向き。`c3d render --facing` で切替。
 - Tripo の出力は +X 正面・身長 1.0 単位に正規化。リグを組む前に `scripts/blender/orient_model.py` で -Y 正面・実寸・接地に直す。

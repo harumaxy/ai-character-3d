@@ -17,6 +17,11 @@ off the renamed bones.
 --rig-type universal skips the humanoid renaming, for a rig that is not a full
 ARP humanoid; Godot's humanoid retargeting will not recognise the bones.
 
+--anim-only swaps the character's meshes for a one-triangle stand-in, for the
+shared-skeleton setup: one animation file imported as an AnimationLibrary, and
+per-character files that carry only mesh and skeleton. See dummy_mesh() for why
+the triangle has to be there at all.
+
 Blender exits 0 even on an uncaught exception, so main() is wrapped and exits 1.
 """
 
@@ -24,6 +29,7 @@ import os
 import sys
 import traceback
 
+import bmesh
 import bpy
 
 # find_target and the argv parser are the same job here as in the retarget
@@ -66,8 +72,54 @@ def configure(scn, rig_type):
     scn.arp_ge_gltf_anim_start_zero = True
 
 
+def skinned_meshes(rig):
+    return [o for o in bpy.data.objects if o.type == "MESH"
+            and any(m.type == "ARMATURE" and m.object == rig for m in o.modifiers)]
+
+
+def dummy_mesh(rig):
+    """Replace the character's meshes with a one-triangle copy of one of them.
+
+    Not decoration: glTF only writes a `skin` for a skinned *mesh*, and Godot
+    only builds a Skeleton3D from a skin. An armature exported on its own lands
+    as plain Node3Ds, and the animation tracks then address "Armature/Hips"
+    instead of "Skeleton3D:Hips" -- unusable as a library for the character
+    files. A copy rather than a fresh triangle so the vertex groups keep the
+    exact names ARP expects to rename alongside the bones.
+
+    The materials go with the geometry; the textures are the bulk of the file.
+    """
+    meshes = skinned_meshes(rig)
+    if not meshes:
+        raise SystemExit(f"no mesh is skinned to {rig.name} — nothing to build a skin from")
+    src = meshes[0]
+    dup = src.copy()
+    dup.data = src.data.copy()
+    dup.name = "anim_lib_dummy"
+    bpy.context.scene.collection.objects.link(dup)
+
+    bm = bmesh.new()
+    bm.from_mesh(dup.data)
+    bm.faces.ensure_lookup_table()
+    if not bm.faces:
+        raise SystemExit(f"{src.name} has no faces to keep")
+    keep = bm.faces[0]
+    # 'FACES' takes the verts and edges left loose by the deleted faces with it.
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if f != keep], context="FACES")
+    bm.to_mesh(dup.data)
+    bm.free()
+
+    dup.data.materials.clear()
+    if dup.data.shape_keys:
+        dup.shape_key_clear()
+    log(f"anim-only: {len(dup.data.polygons)} triangle stand-in for "
+        f"{len(meshes)} skinned mesh(es)")
+    return dup
+
+
 def main():
     opts = parse_args(("out",))
+    opts.setdefault("anim-only", False)
     rig_type = str(opts.get("rig-type") or "humanoid").upper()
     if rig_type not in ("HUMANOID", "UNIVERSAL"):
         raise SystemExit(f"--rig-type expects humanoid or universal, got {opts['rig-type']!r}")
@@ -82,6 +134,10 @@ def main():
     configure(bpy.context.scene, rig_type)
 
     bpy.ops.object.select_all(action="DESELECT")
+    if opts["anim-only"]:
+        # Selected-only, so ARP exports the stand-in instead of the character.
+        bpy.context.scene.arp_ge_sel_only = True
+        dummy_mesh(rig).select_set(True)
     rig.select_set(True)
     bpy.context.view_layer.objects.active = rig
 
