@@ -14,7 +14,7 @@ Tripo に投げるのは**メッシュ生成だけ**。リグとアニメは Ble
 [`blender-arp-retarget.md`](docs/research/blender-arp-retarget.md) §6）。入力の 4 面図もローカル
 ComfyUI で作るので、Tripo の image-to-multiview は使わない。
 
-背景: `../pixel-2d-game-art` の SD1.5 + AnimateDiff 直接生成は walk/run 以外で破綻した。3D 化してからレンダーすれば、姿勢・方向・フレーム間の一貫性は幾何で担保される（Donkey Kong Country / Dead Cells 方式）。調査は `docs/research/`:
+背景: SD1.5 + AnimateDiff 直接生成は walk/run 以外で破綻した。3D 化してからレンダーすれば、姿勢・方向・フレーム間の一貫性は幾何で担保される（Donkey Kong Country / Dead Cells 方式）。調査は `docs/research/`:
 
 - [`tripo-ai.md`](docs/research/tripo-ai.md) — 料金・API v3・SDK・利用規約
 - [`tripo-quality-tips.md`](docs/research/tripo-quality-tips.md) — 入力画像とパラメータのコツ、Blender 後処理
